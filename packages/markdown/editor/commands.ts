@@ -2,7 +2,7 @@ import { type SyntaxNode, Tree } from "@lezer/common"
 import { type ChangeSpec, countColumn, EditorSelection, EditorState, Line, SelectionRange, type StateCommand, Text, Transaction } from "@codemirror/state"
 import { indentUnit, syntaxTree } from "@codemirror/language"
 import { markdownLanguage } from "./language";
-import { linesInRange, getChildren, intersectsRange, getIntersectionNodes, moveRangeDelete, moveRangeInsert } from './codemirror-utils';
+import { linesInRange, getChildren, intersectsRange, getIntersectionNodes, moveRangeDelete, moveRangeInsert, type Range } from './codemirror-utils';
 
 
 type CommandArg = {state: EditorState, dispatch: (tr: Transaction) => void};
@@ -420,6 +420,101 @@ export function toggleStrikethrough({state, dispatch}: CommandArg) {
     startMarker: '~~',
     endMarker: '~~'
   });
+}
+
+
+const underlineOpenTagRegex = /^<u>$/i;
+const underlineCloseTagRegex = /^<\/u>$/i;
+
+export type UnderlineRegion = { open: SyntaxNode, close: SyntaxNode };
+
+function isUnderlineTagNode(node: SyntaxNode, doc: Text) {
+  if (node.name !== 'htmlText') {
+    return false;
+  }
+  const text = doc.sliceString(node.from, node.to);
+  return underlineOpenTagRegex.test(text) || underlineCloseTagRegex.test(text);
+}
+
+export function getUnderlineRegions(tree: Tree, doc: Text, range: Range): UnderlineRegion[] {
+  const tags = getIntersectionNodes(
+    tree,
+    {from: doc.lineAt(range.from).from, to: doc.lineAt(range.to).to},
+    n => isUnderlineTagNode(n, doc),
+  ).sort((a, b) => a.from - b.from);
+
+  const openTags: SyntaxNode[] = [];
+  const regions: UnderlineRegion[] = [];
+  for (const tag of tags) {
+    if (underlineOpenTagRegex.test(doc.sliceString(tag.from, tag.to))) {
+      openTags.push(tag);
+    } else {
+      const open = openTags.pop();
+      if (open) {
+        regions.push({open, close: tag});
+      }
+    }
+  }
+  return regions;
+}
+
+function affectsUnderlineRegion(region: UnderlineRegion, range: SelectionRange) {
+  return (region.open.to <= range.from && region.close.from >= range.to) ||
+    intersectsRange(range, region.open) || intersectsRange(range, region.close);
+}
+
+export function isUnderlineInSelection(state?: EditorState|null) {
+  if (!state) {
+    return false;
+  }
+  const tree = syntaxTree(state);
+  return state.selection.ranges.some(range =>
+    getUnderlineRegions(tree, state.doc, range).some(r => affectsUnderlineRegion(r, range))
+  );
+}
+
+export function toggleUnderline({state, dispatch}: CommandArg) {
+  const tree = syntaxTree(state);
+
+  const changes = state.changeByRange(range => {
+    if (!markdownLanguage.isActiveAt(state, range.from, -1) && !markdownLanguage.isActiveAt(state, range.from, 1)) {
+      return {range};
+    }
+
+    const removeTags = getUnderlineRegions(tree, state.doc, range)
+      .filter(r => affectsUnderlineRegion(r, range))
+      .flatMap(r => [r.open, r.close])
+      .sort((a, b) => a.from - b.from);
+    if (removeTags.length > 0) {
+      let newRange: SelectionRange = range;
+      const changes: ChangeSpec[] = [];
+      for (const tag of removeTags) {
+        const change = {from: tag.from, to: tag.to};
+        newRange = moveRangeDelete(newRange, range, change);
+        changes.push(change);
+      }
+      return { range: newRange, changes };
+    }
+
+    if (range.empty) {
+      const insertText = 'text';
+      return {
+        range: EditorSelection.range(range.from + '<u>'.length, range.from + '<u>'.length + insertText.length),
+        changes: [{from: range.from, insert: '<u>' + insertText + '</u>'}],
+      };
+    } else {
+      return {
+        range: EditorSelection.range(range.from + '<u>'.length, range.to + '<u>'.length),
+        changes: [
+          {from: range.from, insert: '<u>'},
+          {from: range.to, insert: '</u>'},
+        ],
+      };
+    }
+  });
+
+  dispatch(state.update(changes, {scrollIntoView: true, userEvent: 'input'}));
+  return true;
 }
 
 export function toggleFootnote({state, dispatch}: CommandArg) {

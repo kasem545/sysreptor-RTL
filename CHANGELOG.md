@@ -3,6 +3,7 @@
 ## Upcoming
 * Support right-to-left languages (Arabic, Hebrew) in reports, notes, markdown editing and PDF rendering
 * Markdown editor: Add text alignment buttons (align left/center/right) to the toolbar; the alignment attribute syntax is hidden in the editor and revealed when the cursor is on the same line
+* Markdown editor: Add underline button to the toolbar; the `<u>` tags are hidden in the editor and revealed when the cursor is on the same line
 * AI agent: Support skills (https://docs.sysreptor.com/reporting/ai-agent#skills)
 * AI agent: Support `AGENTS.md` in projects (https://docs.sysreptor.com/reporting/ai-agent#agents-md)
 * AI agent: Retry failed LLM requests

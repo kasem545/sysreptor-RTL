@@ -9,6 +9,7 @@ import {
   history, historyKeymap, keymap, setDiagnostics, linter,
   spellcheck, spellcheckTheme,
   textAlignmentDecorations,
+  underlineDecorations,
   lineNumbers, indentUnit, defaultKeymap, indentWithTab, bracketMatching,
   markdown, json, jsonParseLinter, markdownHighlightStyle,
   Transaction,
@@ -688,6 +689,7 @@ export function markdownEditorDefaultExtensions() {
     markdown(),
     commentsExtension(),
     textAlignmentDecorations,
+    underlineDecorations,
     search({
       literal: true,
       createPanel: (view) => new CustomizedSearchPanel(view),
@@ -723,6 +725,7 @@ export function markdownEditorTextFieldExtensions() {
   return [
     highlightTodos,
     textAlignmentDecorations,
+    underlineDecorations,
     // Prevent newlines
     EditorState.transactionFilter.of((tr: any) => {
       const changesWithoutNewlines = [] as any[];
