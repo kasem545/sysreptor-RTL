@@ -13,6 +13,7 @@ import { defaultHandlers as defaultHandlersToMdast, defaultNodeHandlers as defau
 import { remarkFootnotes, remarkToRehypeHandlersFootnotes, remarkToRehypeHandersFootnotesPreview, rehypeFootnoteSeparator, rehypeFootnoteSeparatorPreview } from './footnotes';
 import { remarkStrikethrough, remarkTaskListItem } from './gfm';
 import { rehypeConvertAttrsToStyle, rehypeLinkTargetBlank, rehypeRewriteFileUrls, rehypeTemplates, rehypeRawFixSelfClosingTags, rehypeRawFixPassthroughStitches, rehypeAnnotateMarkdownPositions } from './rehypePlugins';
+import { rehypeTextDirection } from './direction';
 import { remarkAttrs, remarkToRehypeAttrs } from './attrs';
 import { remarkFigure, remarkToRehypeHandlersFigure } from './image';
 import { remarkTables, remarkTableCaptions, remarkToRehypeHandlersTableCaptions, rehypeTableCaptions } from './tables';
@@ -104,10 +105,10 @@ export function formatMarkdown(text) {
 
 /**
  * Render markdown text to HTML
- * @param {{text: string, preview?: boolean, referenceItems?: {id: string, href?: string, label?: string}[], rewriteFileUrlMap?: Record<string, string>, cacheBuster?: string}} options 
+ * @param {{text: string, preview?: boolean, baseDirection?: 'ltr'|'rtl', referenceItems?: {id: string, href?: string, label?: string}[], rewriteFileUrlMap?: Record<string, string>, cacheBuster?: string}} options
  * @returns {string}
  */
-export function renderMarkdownToHtml({ text = '', preview = false, referenceItems = undefined, rewriteFileUrlMap = undefined, cacheBuster = undefined} = {}) {
+export function renderMarkdownToHtml({ text = '', preview = false, baseDirection = undefined, referenceItems = undefined, rewriteFileUrlMap = undefined, cacheBuster = undefined} = {}) {
   let md = markdownParser()
       .use(remarkParse)
       .use(remarkRehype, { 
@@ -129,6 +130,7 @@ export function renderMarkdownToHtml({ text = '', preview = false, referenceItem
       .use(rehypeRawFixPassthroughStitches)
       .use(rehypeTemplateVariables, { preview })
       .use(rehypeConvertAttrsToStyle)
+      .use(rehypeTextDirection, { baseDirection })
       .use(preview ? rehypeFootnoteSeparatorPreview : rehypeFootnoteSeparator)
       .use(preview ? rehypeReferenceLinkPreview : rehypeReferenceLink, { referenceItems })
     if (rewriteFileUrlMap) {

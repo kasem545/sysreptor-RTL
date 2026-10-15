@@ -213,6 +213,15 @@ echo "code block"
 ```
 ~~~
 
+Attributes placed at the end of a paragraph (with a space before the curly braces) apply to the whole paragraph.
+This is also how text alignment works, e.g. via the align left/center/right buttons of the markdown editor toolbar:
+
+~~~md
+This paragraph is centered. {style="text-align: center"}
+
+## Centered Heading {style="text-align: center"}
+~~~
+
 ## Inline HTML
 If something is not possible with markdown, you can fall back to writing HTML code and embed it in the markdown document.
 

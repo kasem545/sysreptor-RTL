@@ -109,6 +109,10 @@ function attrsFromMarkdown() {
         } else if (['heading', 'tableCaption'].includes(parent.type)) {
           // Attach attributes to parent element e.g. "# Heading {#chapter-id}"
           parent.data = {...parent.data, hProperties: node.attrs};
+        } else if (parent.type === 'paragraph' && parent.children[parent.children.length - 1] === node &&
+                   parent.children.slice(0, index).some(c => c.type === 'text' ? c.value.trim() : true)) {
+          // Attach attributes to the paragraph e.g. "text {style=\"text-align: center\"}", when the attributes are at the end of a non-empty paragraph
+          parent.data = {...parent.data, hProperties: node.attrs};
         } else {
           // Could not attach to any node: convert attributes to text
           node.type = 'text';

@@ -4,6 +4,7 @@
       <markdown-toolbar-button @click="codemirrorAction(toggleStrong)" title="Bold (Ctrl+B)" icon="mdi-format-bold" :disabled="props.disabled" :active="activeActions.strong" />
       <markdown-toolbar-button @click="codemirrorAction(toggleEmphasis)" title="Italic (Ctrl+I)" icon="mdi-format-italic" :disabled="props.disabled" :active="activeActions.italic" />
       <markdown-toolbar-button @click="codemirrorAction(toggleStrikethrough)" title="Strikethrough" icon="mdi-format-strikethrough" :disabled="props.disabled" :active="activeActions.strikethrough" />
+      <markdown-toolbar-button @click="codemirrorAction(toggleUnderline)" title="Underline (Ctrl+U)" icon="mdi-format-underline" :disabled="props.disabled" :active="activeActions.underline" />
       <markdown-toolbar-button @click="codemirrorAction(toggleFootnote)" title="Footnote" icon="mdi-format-superscript" :disabled="props.disabled" :active="activeActions.footnote" />
       <markdown-toolbar-button @click="codemirrorAction(toggleCodeText)" title="Inline Code (Ctrl+E)" icon="mdi-code-tags" :disabled="props.disabled" :active="activeActions.codeText" />
       <span class="separator" />
@@ -13,6 +14,10 @@
       <markdown-toolbar-button @click="codemirrorAction(toggleBlockQuote)" title="Blockquote" icon="mdi-format-quote-open" :disabled="props.disabled" :active="activeActions.blockquote" />
       <markdown-toolbar-button @click="codemirrorAction(insertCodeBlock)" title="Code Block" icon="mdi-code-block-tags" :disabled="props.disabled" :active="activeActions.code" />
       <markdown-toolbar-button @click="codemirrorAction(insertTable)" title="Table" icon="mdi-table" :disabled="props.disabled" :active="activeActions.table" />
+      <span class="separator" />
+      <markdown-toolbar-button @click="codemirrorAction(setTextAlignmentLeft)" title="Align Left" icon="mdi-format-align-left" :disabled="props.disabled" :active="activeTextAlignment === 'left'" />
+      <markdown-toolbar-button @click="codemirrorAction(setTextAlignmentCenter)" title="Align Center" icon="mdi-format-align-center" :disabled="props.disabled" :active="activeTextAlignment === 'center'" />
+      <markdown-toolbar-button @click="codemirrorAction(setTextAlignmentRight)" title="Align Right" icon="mdi-format-align-right" :disabled="props.disabled" :active="activeTextAlignment === 'right'" />
       <span class="separator" />
       <v-menu
         v-if="props.referenceItems"
@@ -141,13 +146,16 @@ import { levelNumberFromLevelName } from '@base/utils/cvss';
 import {
   type EditorState,
   type EditorView,
+  getActiveTextAlignment,
   insertCodeBlock,
   insertTable,
   insertText,
   isTaskListInSelection,
   isTypeInSelection,
+  isUnderlineInSelection,
   redo,
   redoDepth,
+  setTextAlignment,
   toggleBlockQuote,
   toggleEmphasis,
   toggleFootnote,
@@ -158,6 +166,7 @@ import {
   toggleStrong,
   toggleCodeText,
   toggleTaskList,
+  toggleUnderline,
   undo,
   undoDepth,
 } from '@sysreptor/markdown/editor';
@@ -192,6 +201,7 @@ const activeActions = computedCached(() => ({
   strong: isTypeInSelection(editorState.value, 'strong'),
   italic: isTypeInSelection(editorState.value, 'italic'),
   strikethrough: isTypeInSelection(editorState.value, 'strikethrough'),
+  underline: isUnderlineInSelection(editorState.value),
   footnote: isTypeInSelection(editorState.value, 'inlineFootnote'),
   codeText: isTypeInSelection(editorState.value, 'codeText'),
   listUnordered: isTypeInSelection(editorState.value, 'listUnordered'),
@@ -204,6 +214,11 @@ const activeActions = computedCached(() => ({
 }));
 const canUndo = computed(() => editorState.value && undoDepth(editorState.value) > 0);
 const canRedo = computed(() => editorState.value && redoDepth(editorState.value) > 0);
+
+const activeTextAlignment = computed(() => getActiveTextAlignment(editorState.value));
+const setTextAlignmentLeft = (view: EditorView) => setTextAlignment(view, 'left');
+const setTextAlignmentCenter = (view: EditorView) => setTextAlignment(view, 'center');
+const setTextAlignmentRight = (view: EditorView) => setTextAlignment(view, 'right');
 
 const spellcheckSupported = computed(() => {
   if (!props.spellcheckSupported) {

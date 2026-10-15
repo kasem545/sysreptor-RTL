@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   EditorState, EditorSelection, EditorView,
   markdown,
-  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleFootnote, toggleCodeText,
+  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleUnderline, toggleFootnote, toggleCodeText,
   toggleListUnordered, toggleListOrdered, toggleTaskList, toggleBlockQuote,
   toggleLink, insertCodeBlock, insertTable, insertNewlineContinueMarkup
 } from '@sysreptor/markdown/editor';
@@ -112,6 +112,27 @@ describe('toggleTaskList', () => {
     testCommand(toggleTaskList, before, after);
   }
 })
+
+describe('toggleUnderline', () => {
+  for (const [before, after] of Object.entries({
+    "a |text| b": "a <u>|text|</u> b",
+    "a | b": "a <u>|text|</u> b",
+    "a <u>te|xt</u> b": "a te|xt b",
+    "a <u>|text|</u> b": "a |text| b",
+    "|a <u>text</u> b|": "|a text b|",
+    "a <u>te|xt</u> b": "a te|xt b",
+    "|a <u>te|xt</u> b": "|a te|xt b",
+    "a |<u>text</u> b": "a |text b",
+    "a <u>text</u>| b": "a text| b",
+    "a |<u>text|</u> b": "a |text| b",
+    "a <u>|text</u>| b": "a |text| b",
+    "|a <u>text</u>| b": "|a text| b",
+    "a **<u>te|xt</u>** b": "a **te|xt** b",
+    "a <u>**te|xt**</u> b": "a **te|xt** b",
+  })) {
+    testCommand(toggleUnderline, before, after);
+  }
+});
 
 describe('toggleLink', () => {
   for (const [before, after] of Object.entries({

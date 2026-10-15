@@ -6,6 +6,9 @@ import type { Socket } from "net";
 
 const isDev = process.env.NODE_ENV === 'development';
 
+// API proxy target for local development (defaults to the docker-compose service name)
+const apiProxyUrl = new URL(process.env.API_PROXY_TARGET ?? 'http://api:8000');
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   extends: ['@sysreptor/nuxt-base-layer'],
@@ -73,24 +76,24 @@ export default defineNuxtConfig({
     server: {
       proxy: {
         '/api': {
-          target: 'http://api:8000',
+          target: apiProxyUrl,
           changeOrigin: false,
           ws: true,
         },
         '/admin': {
-          target: 'http://api:8000',
+          target: apiProxyUrl,
           changeOrigin: false,
         },
         '/__debug__': {
-          target: 'http://api:8000',
+          target: apiProxyUrl,
           changeOrigin: false,
         },
         '/static': {
-          target: 'http://api:8000',
+          target: apiProxyUrl,
           changeOrigin: false,
           bypass(req) {
             const bypassPaths = [
-              '/static/logo.svg', '/static/logo-text.svg', '/static/favicon.ico', 
+              '/static/logo.svg', '/static/logo-text.svg', '/static/favicon.ico',
               '/static/pdfviewer/', '/static/excalidraw/',
             ];
             if (bypassPaths.some(path => req.url!.startsWith(path))) {
@@ -99,7 +102,7 @@ export default defineNuxtConfig({
           },
         },
         '/favicon.ico': {
-          target: 'http://api:8000',
+          target: apiProxyUrl,
           changeOrigin: false,
         },
       }
@@ -141,7 +144,7 @@ export default defineNuxtConfig({
   hooks: {
     // Websocket proxy workaround: https://github.com/nuxt/cli/issues/107#issuecomment-1850751905
     listen(server) {
-      const proxy = createProxyServer({ target: { host: "api", port: 8000 }, ws: true })
+      const proxy = createProxyServer({ target: { host: apiProxyUrl.hostname, port: Number(apiProxyUrl.port) || 80 }, ws: true })
 
       server.removeAllListeners("upgrade")
       server.on("upgrade", (req, socket, head) => {

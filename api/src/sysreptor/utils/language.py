@@ -1,5 +1,8 @@
 from django.db import models
 
+# Primary language subtags written right-to-left
+RTL_LANGUAGES = frozenset({'ar', 'he'})
+
 
 class Language(models.TextChoices):
     # Languages with good spellcheck support in LanguageTool
@@ -50,9 +53,23 @@ class Language(models.TextChoices):
     FINNISH = 'fi-FI', False, 'Finnish (fi-FI)'
     MALTESE = 'mt-MT', False, 'Maltese (mt-MT)'
 
+    # Languages written right-to-left
+    ARABIC = 'ar', False, 'Arabic (ar)'
+    HEBREW = 'he', False, 'Hebrew (he)'
+
     def __new__(cls, value, spellcheck):
         obj = str.__new__(cls, value)
         obj._value_ = value
         obj.spellcheck = bool(spellcheck)
         obj.spellcheck_code = value if spellcheck is True else None if spellcheck is False else spellcheck
         return obj
+
+    @classmethod
+    def is_rtl(cls, value: str) -> bool:
+        return str(value).split('-', 1)[0].lower() in RTL_LANGUAGES
+
+
+def is_rtl_language(value: str | None) -> bool:
+    if not value:
+        return False
+    return Language.is_rtl(value)

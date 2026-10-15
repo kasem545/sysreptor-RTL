@@ -1,4 +1,4 @@
-export { EditorState, EditorSelection, SelectionRange, ChangeSet, Text, Transaction, type Extension, type ChangeSpec } from '@codemirror/state';
+export { EditorState, EditorSelection, SelectionRange, ChangeSet, Text, Transaction, Compartment, type Extension, type ChangeSpec } from '@codemirror/state';
 export { EditorView, ViewUpdate, tooltips, scrollPastEnd, keymap, lineNumbers, drawSelection, rectangularSelection, crosshairCursor, dropCursor } from '@codemirror/view';
 export { history, historyKeymap, defaultKeymap, indentWithTab, undo, redo, undoDepth, redoDepth } from '@codemirror/commands';
 export { forceLinting, setDiagnostics, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
@@ -14,12 +14,15 @@ export { markdown, compareTree, markdownHighlightStyle } from './language';
 export { createEditorExtensionToggler } from './utils';
 export { spellcheck, spellcheckTheme } from './spellcheck';
 export { highlightTodos } from './todos';
+export { textAlignmentDecorations } from './textAlignDecorations';
+export { underlineDecorations, underlineDecorationsPlugin } from './underlineDecorations';
 export { jsonSchemaLinter } from './jsonSchemaLinter';
 export { 
-  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleFootnote, toggleCodeText,
+  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleUnderline, toggleFootnote, toggleCodeText,
   toggleListUnordered, toggleListOrdered, toggleTaskList, toggleBlockQuote,
   toggleLink, insertCodeBlock, insertTable, insertText,
-  isTypeInSelection, isTaskListInSelection,
+  isTypeInSelection, isTaskListInSelection, isUnderlineInSelection,
+  setTextAlignment, getActiveTextAlignment, type TextAlignment,
   insertNewlineContinueMarkup
 } from './commands';
 export { setRemoteClients, remoteSelection } from './awareness';

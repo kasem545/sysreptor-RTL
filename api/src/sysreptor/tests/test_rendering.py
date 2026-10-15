@@ -22,6 +22,7 @@ from sysreptor.tests.mock import (
     override_configuration,
     update,
 )
+from sysreptor.utils.language import Language
 from sysreptor.utils.utils import copy_keys, merge
 
 
@@ -57,6 +58,9 @@ class TestHtmlRendering:
             yield
 
     def render_html(self, template, additional_data=None):
+        return self.extract_html_part(self.render_full_html(template, additional_data))
+
+    def render_full_html(self, template, additional_data=None):
         async def render_only_html(data, language, **kwargs):
             return await render_pdf_impl(
                 template=template,
@@ -70,8 +74,7 @@ class TestHtmlRendering:
         with mock.patch('sysreptor.pentests.rendering.render.render_pdf_impl', render_only_html):
             res = async_to_sync(render_pdf)(self.project)
             assert not res.messages
-            html = res.pdf.decode()
-            return self.extract_html_part(html)
+            return res.pdf.decode()
 
     def extract_html_part(self, html, start=None, end=None):
         if not start and not end:
@@ -97,6 +100,8 @@ class TestHtmlRendering:
         ('<template v-for="r in data.pentesters[1].roles">{{ r }}</template>', lambda self: ''.join(self.project.members.all()[0].roles)),
         ('{{ report.field_user.id }}', lambda self: str(self.user.id)),
         ('{{ report.field_user.name }}', lambda self: self.user.name),
+        ('{{ report.language }}', lambda self: self.project.language),
+        ('{{ report.language_rtl }}', 'false'),
         ('<template v-for="f in findings">{{ f.title }}</template>', lambda self: self.finding.title),
         ('{{ capitalize("hello there") }}', "Hello there"),
         ("{{ formatDate('2022-09-21', 'iso') }}", "2022-09-21"),
@@ -418,6 +423,32 @@ class TestHtmlRendering:
         assertHTMLEqual(section_data['data']['field_markdown'], html)
         finding_data = next(filter(lambda f: f['id'] == str(finding.finding_id), res['result']['findings']))
         assertHTMLEqual(finding_data['data']['field_markdown'], html)
+
+    def test_rtl_document_direction(self):
+        update(self.project, language=Language.ARABIC)
+        html = self.render_full_html('<markdown :text="data.md" />', {'md': 'نص بالعربية\n\nEnglish text\n\n```\ncode\n```'})
+        assert '<html lang="ar" dir="rtl">' in html
+        # Arabic text inherits the RTL document direction, English text and code blocks get explicit LTR direction
+        assertHTMLEqual(
+            self.extract_html_part(html),
+            '<div class="markdown"><p>نص بالعربية</p><p dir="ltr">English text</p><pre class="code-block" dir="ltr"><code class="hljs"><span class="code-block-line" data-line-number="1">code</span></code></pre></div>',
+        )
+
+    def test_ltr_document_direction(self):
+        html = self.render_full_html('<markdown :text="data.md" />', {'md': 'English text'})
+        assert '<html lang="en-US" dir="ltr">' in html
+        assert '<p>' in html
+
+    def test_rtl_pdf_rendering(self):
+        update(self.project, language=Language.ARABIC)
+        res = async_to_sync(render_pdf)(project=self.project)
+        assert not res.messages
+        with pikepdf.Pdf.open(io.BytesIO(res.pdf)) as pdf:
+            assert len(pdf.pages) >= 1
+
+    def test_rtl_template_variable(self):
+        update(self.project, language=Language.HEBREW)
+        assert self.render_html('{{ report.language_rtl }}') == 'true'
 
     def test_render_finding_grouping(self):
         update(self.project_type, finding_grouping=[{'field': 'field_string', 'order': 'asc'}], finding_ordering=[{'field': 'field_int', 'order': 'asc'}])

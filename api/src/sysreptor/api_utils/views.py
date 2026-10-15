@@ -157,6 +157,7 @@ class PublicUtilsViewSet(viewsets.GenericViewSet):
             'code': l.value,
             'name': l.label,
             'spellcheck': l.spellcheck,
+            'rtl': Language.is_rtl(l.value),
             'enabled': not configuration.PREFERRED_LANGUAGES or l.value in configuration.PREFERRED_LANGUAGES,
         } for l in remove_duplicates(list(map(Language, configuration.PREFERRED_LANGUAGES or [])) + list(Language))]
 

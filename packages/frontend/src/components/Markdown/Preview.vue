@@ -58,6 +58,7 @@ import baseTextCss from '@/assets/rendering/base-text.css?inline';
 import notoCss from '@base/assets/fonts/noto/noto.css?inline';
 import mdiCss from '@mdi/font/css/materialdesignicons.css?inline';
 import previewCss from './preview.scss?inline';
+import { isRtlLanguage } from '~/utils/language';
 
 mermaid.initialize({
   startOnLoad: false,
@@ -73,6 +74,7 @@ const IFRAME_SRCDOC = '<!DOCTYPE html><html><head><meta charset="utf-8"></head><
 const props = defineProps<{
   value?: string|null;
   readonly?: boolean;
+  lang?: string|null;
   rewriteFileUrlMap?: Record<string, string>;
   referenceItems?: ReferenceItem[];
   cacheBuster?: string;
@@ -140,6 +142,8 @@ function syncIframeStyles() {
   }
 
   doc.documentElement.className = theme.themeClasses.value || '';
+  doc.documentElement.setAttribute('lang', props.lang || 'en');
+  doc.documentElement.setAttribute('dir', isRtlLanguage(props.lang) ? 'rtl' : 'ltr');
   doc.body.classList.add('preview');
 }
 
@@ -191,6 +195,7 @@ watchThrottled(() => props.value, async () => {
     renderedMarkdown.value = await renderMarkdownToHtmlInWorker({
       text: mdText,
       preview: true,
+      baseDirection: isRtlLanguage(props.lang) ? 'rtl' : 'ltr',
       referenceItems: toRaw(props.referenceItems),
       rewriteFileUrlMap: props.rewriteFileUrlMap,
       cacheBuster: cacheBuster.value,
@@ -212,6 +217,7 @@ watchThrottled(() => props.value, async () => {
 }, { throttle: throttleMs, leading: true, immediate: true });
 
 watch([theme.styles, theme.themeClasses], syncIframeStyles);
+watch(() => props.lang, syncIframeStyles);
 
 useResizeObserver(hostRef, () => {
   syncIframeStyles();

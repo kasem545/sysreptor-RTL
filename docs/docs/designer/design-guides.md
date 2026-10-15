@@ -154,6 +154,13 @@ Monospace fonts (for code blocks):
 
 *Deprecated, replaced by similar-looking fonts
 
+Fonts for right-to-left languages (Arabic, Hebrew):
+
+* [Noto Sans Arabic](https://fonts.google.com/noto/specimen/Noto+Sans+Arabic)
+* [Noto Naskh Arabic](https://fonts.google.com/noto/specimen/Noto+Naskh+Arabic)
+* [Noto Sans Hebrew](https://fonts.google.com/noto/specimen/Noto+Sans+Hebrew)
+* [Noto Serif Hebrew](https://fonts.google.com/noto/specimen/Noto+Serif+Hebrew)
+
 ### Custom Fonts
 Custom fonts can be added with CSS `@font-face` rules.
 Requests to external systems are blocked. 
@@ -169,5 +176,52 @@ It is possible to upload the `@font-face` CSS rules in a separate file and inclu
   font-family: 'Roboto';
   font-weight: 400;
   src: url('/assets/name/roboto-regular.woff2')
+}
+```
+
+## Right-to-Left Languages (Arabic, Hebrew)
+
+SysReptor supports reports written in right-to-left (RTL) languages like Arabic and Hebrew.
+
+When the project language is an RTL language, the rendered report document automatically gets `<html lang="ar" dir="rtl">` (or `he`) set.
+All text is aligned and ordered right-to-left, including headings, lists, tables and page numbers.
+Markdown content handles mixed directions automatically: text blocks written in a different direction than the document (e.g. an English paragraph in an Arabic report, or an Arabic paragraph in an English report) get an explicit `dir` attribute, and code blocks always remain left-to-right.
+
+In Vue templates you can check the direction with the `report.language_rtl` variable:
+
+```html
+<span v-if="report.language_rtl">RTL</span>
+<span v-else>LTR</span>
+```
+
+The editor and markdown preview in the web UI follow the project language as well.
+
+### Customizing direction in CSS
+
+The document direction is set via the `dir` attribute on the `html` element.
+It can be overridden for individual elements in CSS:
+
+```css
+/* Force left-to-right for specific elements (e.g. CVSS vectors) */
+.cvss-vector {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+```
+
+We recommend using [CSS logical properties](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_logical_properties_and_values) (e.g. `margin-inline-start` instead of `margin-left`, `border-inline-start` instead of `border-left`) so styles automatically adapt to the text direction.
+The provided `base.css` already uses logical properties.
+
+### RTL page layout
+
+`@page` margin boxes (`@top-left`, `@top-right`, `@bottom-left`, ...) refer to physical page sides and do not flip automatically.
+When designing an RTL report, mirror them manually:
+
+```css
+@page {
+  @top-left {
+    /* appears at the physical top-left, e.g. page number for RTL documents */
+    content: counter(page);
+  }
 }
 ```

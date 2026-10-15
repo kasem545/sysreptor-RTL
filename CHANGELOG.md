@@ -1,5 +1,10 @@
 # Changelog
 
+## Upcoming
+* Support right-to-left languages (Arabic, Hebrew) in reports, notes, markdown editing and PDF rendering
+* Markdown editor: Add text alignment buttons (align left/center/right) to the toolbar; the alignment attribute syntax is hidden in the editor and revealed when the cursor is on the same line
+* Markdown editor: Add underline button to the toolbar; the `<u>` tags are hidden in the editor and revealed when the cursor is on the same line
+
 ## v2026.89 - 2026-10-14
 * Fix duplicate module check in plugin loader
 * Prevent changing the design of readonly projects

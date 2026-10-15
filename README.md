@@ -3,7 +3,7 @@
     <a href="https://docs.sysreptor.com/"><img src="/docs/docs/public/assets/dino/banner.svg" width="100%" alt="SysReptor"></a>
 </h1>
 
-<h4 align="center">An easy and customizable pentest reporting platform designed to simplify pentest report creation for security professionals.</h4>
+<h4 align="center">An easy and customizable pentest reporting platform for security professionals.</h4>
 
 <div align="center">
     
@@ -36,6 +36,7 @@ SysReptor is a fully customizable pentest reporting platform designed for penetr
 🎨 Design your report in HTML.<br>
 ✍️ Write it in Markdown.<br>
 📄 Render to PDF.<br>
+🌍 Right-to-left languages (Arabic, Hebrew).<br>
 ☁️ Self-hosted or Cloud.<br>
 
 <h3 align="center">
@@ -51,6 +52,54 @@ SysReptor is a fully customizable pentest reporting platform designed for penetr
 * [Check out some demo reports](https://docs.sysreptor.com/demo-reports/)
 * [Get involved](https://docs.sysreptor.com/get-involved/)
 * ⭐ Leave a star? 💚
+
+### Build the image
+
+```bash
+docker build -t syslifters/sysreptor:local .
+```
+
+The deploy stack references `syslifters/sysreptor:${SYSREPTOR_VERSION}`, so tagging your build as `syslifters/sysreptor:local`
+lets you use it by setting one variable, without changing the compose files.
+
+### Configure and start
+
+```bash
+cd deploy
+cp .env.example .env
+cp app.env.example app.env
+
+# Generate secrets
+python3 -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(48))" >> app.env
+KEY=$(head -c 32 /dev/urandom | base64)
+echo "ENCRYPTION_KEYS='[{\"id\": \"key-1\", \"key\": \"$KEY\", \"cipher\": \"AES-GCM\", \"revoked\": false}]'" >> app.env
+echo 'DEFAULT_ENCRYPTION_KEY_ID=key-1' >> app.env
+
+# Use your locally built image
+sed -i 's/^# SYSREPTOR_VERSION=.*/SYSREPTOR_VERSION=local/' .env
+
+docker compose up -d
+curl -f http://localhost:8000/api/public/utils/healthcheck/
+```
+
+By default the app listens on `127.0.0.1:8000`. Change `BIND_PORT` in `.env` to expose it on other addresses or ports,
+and see `app.env` for more settings (plugins, allowed hosts, etc.).
+
+### Create an admin user
+
+These are the login credentials for `http://localhost:8000` — there are no default credentials:
+
+```bash
+docker compose exec app python3 manage.py createorupdateuser --username admin --password <password> --superuser  # min. 15 characters
+```
+
+### Create a user
+
+```bash
+docker compose exec app python3 manage.py createorupdateuser --username sysreptor --password <password>
+```
+
+Forgot the password? Re-run the same command with a new password to reset it.
 
 <br>
 The FFG is the central national funding organization and strengthens Austria's innovative power.<br>

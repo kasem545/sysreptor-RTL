@@ -12,7 +12,9 @@ export default {
   },
   methods: {
     compileMarkdown(text: string) {
-      return renderMarkdownToHtml({ text, preview: false });
+      // The document element dir attribute is set by the rendering pipeline based on the report language
+      const baseDirection = document.documentElement.dir === 'rtl' ? 'rtl' : 'ltr';
+      return renderMarkdownToHtml({ text, preview: false, baseDirection });
     },
   },
   render() {

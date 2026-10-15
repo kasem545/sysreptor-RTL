@@ -13,3 +13,36 @@
   font-display: swap;
   src: url('@base/assets/fonts/noto/NotoSans-Italic-VariableFont_wdth,wght.woff2') format('woff2');
 }
+
+/* Right-to-left script fonts: extend "Noto Sans" for Arabic/Hebrew codepoints,
+   plus separate family names for explicit use */
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@base/assets/fonts/noto/NotoSansArabic-VariableFont_wdth,wght.ttf') format('truetype');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF;
+}
+@font-face {
+  font-family: 'Noto Sans';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@base/assets/fonts/noto/NotoSansHebrew-VariableFont_wdth,wght.ttf') format('truetype');
+  unicode-range: U+0590-05FF, U+FB1D-FB4F;
+}
+@font-face {
+  font-family: 'Noto Sans Arabic';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@base/assets/fonts/noto/NotoSansArabic-VariableFont_wdth,wght.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Noto Sans Hebrew';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@base/assets/fonts/noto/NotoSansHebrew-VariableFont_wdth,wght.ttf') format('truetype');
+}

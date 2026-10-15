@@ -2,7 +2,7 @@ import { type SyntaxNode, Tree } from "@lezer/common"
 import { type ChangeSpec, countColumn, EditorSelection, EditorState, Line, SelectionRange, type StateCommand, Text, Transaction } from "@codemirror/state"
 import { indentUnit, syntaxTree } from "@codemirror/language"
 import { markdownLanguage } from "./language";
-import { linesInRange, getChildren, intersectsRange, getIntersectionNodes, moveRangeDelete, moveRangeInsert } from './codemirror-utils';
+import { linesInRange, getChildren, intersectsRange, getIntersectionNodes, moveRangeDelete, moveRangeInsert, type Range } from './codemirror-utils';
 
 
 type CommandArg = {state: EditorState, dispatch: (tr: Transaction) => void};
@@ -422,6 +422,101 @@ export function toggleStrikethrough({state, dispatch}: CommandArg) {
   });
 }
 
+
+const underlineOpenTagRegex = /^<u>$/i;
+const underlineCloseTagRegex = /^<\/u>$/i;
+
+export type UnderlineRegion = { open: SyntaxNode, close: SyntaxNode };
+
+function isUnderlineTagNode(node: SyntaxNode, doc: Text) {
+  if (node.name !== 'htmlText') {
+    return false;
+  }
+  const text = doc.sliceString(node.from, node.to);
+  return underlineOpenTagRegex.test(text) || underlineCloseTagRegex.test(text);
+}
+
+export function getUnderlineRegions(tree: Tree, doc: Text, range: Range): UnderlineRegion[] {
+  const tags = getIntersectionNodes(
+    tree,
+    {from: doc.lineAt(range.from).from, to: doc.lineAt(range.to).to},
+    n => isUnderlineTagNode(n, doc),
+  ).sort((a, b) => a.from - b.from);
+
+  const openTags: SyntaxNode[] = [];
+  const regions: UnderlineRegion[] = [];
+  for (const tag of tags) {
+    if (underlineOpenTagRegex.test(doc.sliceString(tag.from, tag.to))) {
+      openTags.push(tag);
+    } else {
+      const open = openTags.pop();
+      if (open) {
+        regions.push({open, close: tag});
+      }
+    }
+  }
+  return regions;
+}
+
+function affectsUnderlineRegion(region: UnderlineRegion, range: SelectionRange) {
+  return (region.open.to <= range.from && region.close.from >= range.to) ||
+    intersectsRange(range, region.open) || intersectsRange(range, region.close);
+}
+
+export function isUnderlineInSelection(state?: EditorState|null) {
+  if (!state) {
+    return false;
+  }
+  const tree = syntaxTree(state);
+  return state.selection.ranges.some(range =>
+    getUnderlineRegions(tree, state.doc, range).some(r => affectsUnderlineRegion(r, range))
+  );
+}
+
+export function toggleUnderline({state, dispatch}: CommandArg) {
+  const tree = syntaxTree(state);
+
+  const changes = state.changeByRange(range => {
+    if (!markdownLanguage.isActiveAt(state, range.from, -1) && !markdownLanguage.isActiveAt(state, range.from, 1)) {
+      return {range};
+    }
+
+    const removeTags = getUnderlineRegions(tree, state.doc, range)
+      .filter(r => affectsUnderlineRegion(r, range))
+      .flatMap(r => [r.open, r.close])
+      .sort((a, b) => a.from - b.from);
+    if (removeTags.length > 0) {
+      let newRange: SelectionRange = range;
+      const changes: ChangeSpec[] = [];
+      for (const tag of removeTags) {
+        const change = {from: tag.from, to: tag.to};
+        newRange = moveRangeDelete(newRange, range, change);
+        changes.push(change);
+      }
+      return { range: newRange, changes };
+    }
+
+    if (range.empty) {
+      const insertText = 'text';
+      return {
+        range: EditorSelection.range(range.from + '<u>'.length, range.from + '<u>'.length + insertText.length),
+        changes: [{from: range.from, insert: '<u>' + insertText + '</u>'}],
+      };
+    } else {
+      return {
+        range: EditorSelection.range(range.from + '<u>'.length, range.to + '<u>'.length),
+        changes: [
+          {from: range.from, insert: '<u>'},
+          {from: range.to, insert: '</u>'},
+        ],
+      };
+    }
+  });
+
+  dispatch(state.update(changes, {scrollIntoView: true, userEvent: 'input'}));
+  return true;
+}
+
 export function toggleFootnote({state, dispatch}: CommandArg) {
   return toggleMarkerType({state, dispatch}, {
     type: 'inlineFootnote',
@@ -571,7 +666,7 @@ export function toggleBlockQuote({state, dispatch}: CommandArg) {
         }
       })
       .filter(r => !range.empty ? intersectsRange(lineRange, r) : true);
-      
+
       let newRange = range;
       const changes: ChangeSpec[] = [];
       for (const change of removeMarkers) {
@@ -581,6 +676,104 @@ export function toggleBlockQuote({state, dispatch}: CommandArg) {
       return { range: newRange, changes };
     }
   });
+}
+
+
+export type TextAlignment = 'left' | 'center' | 'right' | 'justify';
+
+const trailingAttrsRegex = / *\{([^}]*)\}$/;
+const textAlignStyleRegex = /style\s*=\s*"[^"]*?\btext-align:\s*(left|center|right|justify)\b[^"]*"/i;
+const styleAttrRegex = /\s*style\s*=\s*"[^"]*"/i;
+
+function parseTextAlignValue(attrsString: string): TextAlignment|null {
+  const m = /\btext-align:\s*(left|center|right|justify)\b/i.exec(attrsString);
+  return m?.[1]?.toLowerCase() as TextAlignment|null ?? null;
+}
+
+/**
+ * Get the range of the block (separated by blank lines) containing the given position.
+ */
+function getBlockRangeAt(doc: Text, pos: number): {from: number, to: number} {
+  let firstLine = doc.lineAt(pos);
+  while (firstLine.number > 1 && doc.lineAt(firstLine.from - 1).text.trim() !== '') {
+    firstLine = doc.lineAt(firstLine.from - 1);
+  }
+  let lastLine = doc.lineAt(pos);
+  while (lastLine.to < doc.length && doc.lineAt(lastLine.to + 1).text.trim() !== '') {
+    lastLine = doc.lineAt(lastLine.to + 1);
+  }
+  return {from: firstLine.from, to: lastLine.to};
+}
+
+/**
+ * Get the text alignment of the block (paragraph, heading, ...) at the cursor position,
+ * applied via trailing markdown attributes (e.g. `text {style="text-align: center"}`).
+ */
+export function getActiveTextAlignment(state?: EditorState|null): TextAlignment|null {
+  if (!state) {
+    return null;
+  }
+  for (const range of state.selection.ranges) {
+    const block = getBlockRangeAt(state.doc, range.from);
+    const lastLine = state.doc.lineAt(block.to);
+    const m = trailingAttrsRegex.exec(lastLine.text);
+    if (m) {
+      return parseTextAlignValue(m[1]!);
+    }
+  }
+  return null;
+}
+
+/**
+ * Set the text alignment of the block (paragraph, heading, ...) at each selection range,
+ * by appending/toggling trailing markdown attributes (e.g. ` {style="text-align: center"}`).
+ * Calling with the alignment that is already active removes it.
+ */
+export function setTextAlignment({state, dispatch}: CommandArg, alignment: TextAlignment) {
+  const tree = syntaxTree(state);
+
+  const changes = state.changeByRange(range => {
+    const block = getBlockRangeAt(state.doc, range.from);
+    const blockRange = {from: block.from, to: block.to + 1};
+    // Do not modify blocks where trailing attributes would break the syntax
+    if (getIntersectionNodes(tree, blockRange, n => n.name === 'codeFenced' || n.name === 'table').length > 0) {
+      return {range};
+    }
+
+    const lastLine = state.doc.lineAt(block.to);
+    const m = trailingAttrsRegex.exec(lastLine.text);
+    const attrsString = m?.[1] ?? null;
+    const currentAlignment = attrsString !== null ? parseTextAlignValue(attrsString) : null;
+
+    if (currentAlignment === alignment) {
+      // Toggle off: remove the text-align style (and the attributes if they become empty)
+      let remainingAttrs = attrsString!.replace(styleAttrRegex, '').trim();
+      const change = remainingAttrs ?
+        {from: lastLine.from + m!.index, to: lastLine.to, insert: ' {' + remainingAttrs + '}'} :
+        {from: lastLine.from + m!.index, to: lastLine.to};
+      return {range: moveRangeDelete(range, range, change), changes: [change]};
+    }
+
+    const styleAttr = `style="text-align: ${alignment}"`;
+    if (attrsString !== null && currentAlignment) {
+      // Replace existing text-align style
+      const replaceFrom = lastLine.from + m!.index;
+      const newAttrs = attrsString.replace(styleAttrRegex, ` ${styleAttr}`).replace(/\s+/g, ' ').trim();
+      const change = {from: replaceFrom, to: lastLine.to, insert: ' {' + newAttrs + '}'};
+      return {range: moveRangeDelete(range, range, change), changes: [change]};
+    } else if (attrsString !== null) {
+      // Append to existing attributes (inside the closing brace)
+      const change = {from: lastLine.to - 1, insert: ` ${styleAttr}`};
+      return {range: moveRangeInsert(range, range, change), changes: [change]};
+    } else {
+      // Append new attributes at the end of the block
+      const change = {from: lastLine.to, insert: ` {${styleAttr}}`};
+      return {range: moveRangeInsert(range, range, change), changes: [change]};
+    }
+  });
+
+  dispatch(state.update(changes, {scrollIntoView: true, userEvent: 'input'}));
+  return true;
 }
 
 function isTaskListItem(node: SyntaxNode, doc: Text) {

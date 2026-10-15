@@ -69,7 +69,7 @@
           />
         </div>
       </div>
-      <span v-else class="comment-text">{{ modelValue.text }}</span>
+      <span v-else class="comment-text" dir="auto">{{ modelValue.text }}</span>
     </v-card-text>
   </div>
 </template>
