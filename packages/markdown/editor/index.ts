@@ -15,12 +15,13 @@ export { createEditorExtensionToggler } from './utils';
 export { spellcheck, spellcheckTheme } from './spellcheck';
 export { highlightTodos } from './todos';
 export { textAlignmentDecorations } from './textAlignDecorations';
+export { underlineDecorations, underlineDecorationsPlugin } from './underlineDecorations';
 export { jsonSchemaLinter } from './jsonSchemaLinter';
 export { 
-  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleFootnote, toggleCodeText,
+  toggleStrong, toggleEmphasis, toggleStrikethrough, toggleUnderline, toggleFootnote, toggleCodeText,
   toggleListUnordered, toggleListOrdered, toggleTaskList, toggleBlockQuote,
   toggleLink, insertCodeBlock, insertTable, insertText,
-  isTypeInSelection, isTaskListInSelection,
+  isTypeInSelection, isTaskListInSelection, isUnderlineInSelection,
   setTextAlignment, getActiveTextAlignment, type TextAlignment,
   insertNewlineContinueMarkup
 } from './commands';

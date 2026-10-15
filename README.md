@@ -93,6 +93,12 @@ These are the login credentials for `http://localhost:8000` — there are no def
 docker compose exec app python3 manage.py createorupdateuser --username admin --password <password> --superuser  # min. 15 characters
 ```
 
+### Create a user
+
+```bash
+docker compose exec app python3 manage.py createorupdateuser --username sysreptor --password <password>
+```
+
 Forgot the password? Re-run the same command with a new password to reset it.
 
 <br>

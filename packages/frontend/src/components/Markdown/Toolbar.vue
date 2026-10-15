@@ -4,6 +4,7 @@
       <markdown-toolbar-button @click="codemirrorAction(toggleStrong)" title="Bold (Ctrl+B)" icon="mdi-format-bold" :disabled="props.disabled" :active="activeActions.strong" />
       <markdown-toolbar-button @click="codemirrorAction(toggleEmphasis)" title="Italic (Ctrl+I)" icon="mdi-format-italic" :disabled="props.disabled" :active="activeActions.italic" />
       <markdown-toolbar-button @click="codemirrorAction(toggleStrikethrough)" title="Strikethrough" icon="mdi-format-strikethrough" :disabled="props.disabled" :active="activeActions.strikethrough" />
+      <markdown-toolbar-button @click="codemirrorAction(toggleUnderline)" title="Underline (Ctrl+U)" icon="mdi-format-underline" :disabled="props.disabled" :active="activeActions.underline" />
       <markdown-toolbar-button @click="codemirrorAction(toggleFootnote)" title="Footnote" icon="mdi-format-superscript" :disabled="props.disabled" :active="activeActions.footnote" />
       <markdown-toolbar-button @click="codemirrorAction(toggleCodeText)" title="Inline Code (Ctrl+E)" icon="mdi-code-tags" :disabled="props.disabled" :active="activeActions.codeText" />
       <span class="separator" />
@@ -144,6 +145,7 @@ import {
   insertText,
   isTaskListInSelection,
   isTypeInSelection,
+  isUnderlineInSelection,
   redo,
   redoDepth,
   setTextAlignment,
@@ -157,6 +159,7 @@ import {
   toggleStrong,
   toggleCodeText,
   toggleTaskList,
+  toggleUnderline,
   undo,
   undoDepth,
 } from '@sysreptor/markdown/editor';
@@ -189,6 +192,7 @@ const activeActions = computedCached(() => ({
   strong: isTypeInSelection(editorState.value, 'strong'),
   italic: isTypeInSelection(editorState.value, 'italic'),
   strikethrough: isTypeInSelection(editorState.value, 'strikethrough'),
+  underline: isUnderlineInSelection(editorState.value),
   footnote: isTypeInSelection(editorState.value, 'inlineFootnote'),
   codeText: isTypeInSelection(editorState.value, 'codeText'),
   listUnordered: isTypeInSelection(editorState.value, 'listUnordered'),
