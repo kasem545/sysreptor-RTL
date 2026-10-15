@@ -1,11 +1,8 @@
 import json
 import logging
-from collections.abc import Callable
-from functools import wraps
 from typing import Any
 
 import yaml
-from asgiref.sync import iscoroutinefunction, sync_to_async
 from decouple import config
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents.backends import StateBackend
@@ -23,26 +20,42 @@ from django.utils import timezone
 from langchain import chat_models
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
-    AgentMiddleware,
-    AgentState,
     ModelRetryMiddleware,
     TodoListMiddleware,
+    ToolErrorMiddleware,
 )
 from langchain.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
-from langchain.tools import ToolRuntime, tool
 from langchain_core._api import suppress_langchain_beta_warning
+from langchain_core.exceptions import LangChainException
 from langgraph.config import get_config
-from langgraph.errors import GraphInterrupt
 from langgraph.stream import UpdatesTransformer
-from langgraph.types import Command
 from rest_framework.exceptions import ValidationError as DRFValidationError
 
 from sysreptor.ai.agents.checkpointer import DjangoModelCheckpointer
-from sysreptor.ai.agents.middleware import MergeConsecutiveMessagesMiddleware, SelectConfiguredModelMiddleware
+from sysreptor.ai.agents.middleware import (
+    MergeConsecutiveMessagesMiddleware,
+    MessageTimestampMiddleware,
+    SelectConfiguredModelMiddleware,
+    stamp_message_timestamp,
+)
 from sysreptor.ai.models import ChatThread, LangchainCheckpoint
 from sysreptor.utils.configuration import configuration
 from sysreptor.utils.history import history_context
 from sysreptor.utils.utils import copy_keys, omit_keys
+
+
+def format_agent_error(ex: Exception, generic_msg: str | None = 'Error: Internal server error') -> str:
+    if isinstance(ex, ObjectDoesNotExist):
+        return 'Error: Object not found'
+    elif isinstance(ex, ValidationError | DRFValidationError):
+        return f'Error: {ex}'
+    elif isinstance(ex, LangChainException):
+        body = getattr(ex, 'body', None)
+        if isinstance(body, dict) and isinstance(body.get('message'), str):
+            return f'Error: {body["message"]}'
+        if getattr(ex, 'message', None):
+            return f'Error: {ex.message}'
+    return generic_msg
 
 
 def to_yaml(data: Any) -> str:
@@ -70,48 +83,6 @@ def to_inline_context(data: dict[str, Any]) -> str:
     return ' '.join(f'{to_short_string(k)}={to_short_string(v)}' for k, v in data.items())
 
 
-def agent_tool(metadata=None, **kwargs):
-    def decorator(func: Callable) -> Callable:
-        if not iscoroutinefunction(func):
-            func = sync_to_async(func)
-
-        @tool(**kwargs)
-        @wraps(func)
-        async def tool_func(*tool_args, runtime: ToolRuntime, **tool_kwargs):
-            out = ToolMessage(
-                content='',
-                status='error',
-                tool_call_id=runtime.tool_call_id,
-            )
-            stamp_message_timestamp(out)
-
-            try:
-                res_output = None
-                res_content = await func(*tool_args, runtime=runtime, **tool_kwargs)
-                if isinstance(res_content, tuple):
-                    res_content, res_output = res_content
-                if not isinstance(res_content, str):
-                    res_content = to_yaml(res_content)
-                out.content = res_content
-                out.additional_kwargs['output'] = res_output or {}
-                out.status = 'success'
-            except ObjectDoesNotExist:
-                out.content = 'Error: Object not found'
-            except (ValidationError, DRFValidationError) as ex:
-                out.content = f'Error: {ex}'
-            except GraphInterrupt:
-                raise
-            except Exception as ex:
-                logging.exception(ex)
-                out.content = 'Error: Unexpected error'
-            return Command(update={
-                'messages': [out],
-            })
-        tool_func.metadata = (tool_func.metadata or {}) | (metadata or {})
-        return tool_func
-    return decorator
-
-
 def is_in_subagent() -> bool:
     try:
         config = get_config()
@@ -122,7 +93,7 @@ def is_in_subagent() -> bool:
         return False
 
 
-def get_model_configs() -> list:
+def get_model_configs(*, include_hidden: bool = True) -> list:
     try:
         out = [json.loads(c) for c in configuration.AI_AGENT_MODELS or []]
     except Exception:
@@ -139,11 +110,13 @@ def get_model_configs() -> list:
             'base_url': config(f'{env_prefix}_BASE_URL', default=config(f'{env_prefix}_API_BASE', default=config(f'{env_prefix}_HOST', default=None))),
         }]
 
+    if not include_hidden:
+        out = [c for c in out if not c.get('hidden')]
     return out
 
 
 def get_default_model_id() -> str:
-    default_model = next(iter(get_model_configs()), None)
+    default_model = next(iter(get_model_configs(include_hidden=False)), None)
     if not default_model:
         raise ValueError('No LLM model configured')
     return default_model.get('id')
@@ -156,37 +129,8 @@ def init_chat_model(model: str):
     return chat_models.init_chat_model(
         model=config.get('model'),
         model_provider=config.get('provider', 'deepseek'),
-        **omit_keys(config, ['id', 'label', 'provider', 'model']),
+        **omit_keys(config, ['id', 'label', 'provider', 'model', 'vision_model', 'hidden']),
     )
-
-
-def stamp_message_timestamp(message: HumanMessage | AIMessage | ToolMessage) -> None:
-    if message.additional_kwargs.get('timestamp'):
-        return
-    message.additional_kwargs = {
-        **(message.additional_kwargs or {}),
-        'timestamp': timezone.now().isoformat(),
-    }
-
-
-class MessageTimestampMiddleware(AgentMiddleware[AgentState]):
-    """
-    Stamp completion timestamps on user and assistant messages for the chat UI.
-    """
-
-    async def abefore_agent(self, state, runtime):
-        for m in reversed(state['messages']):
-            if isinstance(m, HumanMessage):
-                if not m.additional_kwargs.get('injected_context'):
-                    stamp_message_timestamp(m)
-                break
-
-    async def aafter_model(self, state, runtime):
-        for m in reversed(state['messages']):
-            if isinstance(m, AIMessage):
-                stamp_message_timestamp(m)
-            else:
-                break
 
 
 def create_sysreptor_agent(system_prompt: str, tools: list, middleware: list, **kwargs):
@@ -197,6 +141,10 @@ def create_sysreptor_agent(system_prompt: str, tools: list, middleware: list, **
     default_model = init_chat_model(get_default_model_id())
     profile = _harness_profile_for_model(default_model, spec=None)
     tools = _apply_tool_description_overrides(tools, profile.tool_description_overrides)
+    subagent_tools = [
+        t for t in tools
+        if (getattr(t, 'metadata', None) or {}).get('subagent', True)
+    ]
 
     backend = StateBackend()
     middleware = [
@@ -205,7 +153,8 @@ def create_sysreptor_agent(system_prompt: str, tools: list, middleware: list, **
         PatchToolCallsMiddleware(),
         create_summarization_middleware(model=default_model, backend=backend),
         MessageTimestampMiddleware(),
-        ModelRetryMiddleware(max_retries=2),
+        ModelRetryMiddleware(max_retries=2, on_failure='error'),
+        ToolErrorMiddleware(on_error=lambda ex, request: format_agent_error(ex)),
     ] + profile.materialize_extra_middleware() + middleware + [
         MergeConsecutiveMessagesMiddleware(),
     ]
@@ -222,7 +171,7 @@ def create_sysreptor_agent(system_prompt: str, tools: list, middleware: list, **
             'description': gp_profile.description or GENERAL_PURPOSE_SUBAGENT['description'],
             'system_prompt': subagent_prompt,
             'model': default_model,
-            'tools': tools,
+            'tools': subagent_tools,
             'middleware': middleware,
         },
     ]
@@ -355,7 +304,7 @@ async def agent_stream(agent, input, thread: ChatThread, context: dict[str, str]
                         for c in ai_message.tool_calls:
                             if not c.get('id'):
                                 continue
-                            if c.get('name') == 'task' and isinstance(c.get('args'), dict):
+                            if c.get('name') in ['task', 'analyze_image'] and isinstance(c.get('args'), dict):
                                 pending_tool_call_ids.append(c['id'])
                             yield {
                                 'type': 'tool_call',
@@ -384,9 +333,10 @@ async def agent_stream(agent, input, thread: ChatThread, context: dict[str, str]
                                 }
     except Exception as ex:
         logging.exception(ex)
+        msg = format_agent_error(ex)
         yield {
             'type': 'error',
-            'content': 'Internal server error',
+            'content': msg,
         }
         raise ex
 

@@ -4,6 +4,27 @@
 * Support right-to-left languages (Arabic, Hebrew) in reports, notes, markdown editing and PDF rendering
 * Markdown editor: Add text alignment buttons (align left/center/right) to the toolbar; the alignment attribute syntax is hidden in the editor and revealed when the cursor is on the same line
 * Markdown editor: Add underline button to the toolbar; the `<u>` tags are hidden in the editor and revealed when the cursor is on the same line
+
+## v2026.89 - 2026-10-14
+* Fix duplicate module check in plugin loader
+* Prevent changing the design of readonly projects
+* Prevent updating shared root note title
+* UI: Fix overflowing icons and badges cut off inside buttons
+
+
+## v2026.86 - 2026-10-07
+* AI agent: Add `analyze_image` tool
+* AI agent: Fix ask_user UI selection bugs
+* AI agent: Show detailed LLM errors
+* AI agent: Prevent subagent errors from aborting the main agent
+* AI agent: Add button to fill fields
+* Security: implement multiple hardening measures
+* Invalidate user sessions on password change
+* Invalidate shared note sessions when the share password changes
+* Fix JSON field UI bugs
+
+
+## v2026.82 - 2026-09-23
 * AI agent: Support skills (https://docs.sysreptor.com/reporting/ai-agent#skills)
 * AI agent: Support `AGENTS.md` in projects (https://docs.sysreptor.com/reporting/ai-agent#agents-md)
 * AI agent: Retry failed LLM requests

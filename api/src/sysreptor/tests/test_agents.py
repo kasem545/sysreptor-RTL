@@ -4,6 +4,7 @@ import re
 import textwrap
 from datetime import timedelta
 from unittest import mock
+from uuid import uuid4
 
 import pytest
 from asgiref.sync import async_to_sync
@@ -15,6 +16,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.outputs.chat_generation import ChatGenerationChunk
+from langgraph.checkpoint.base import WRITES_IDX_MAP
 
 from sysreptor.ai.agents import get_agent
 from sysreptor.ai.agents.base import (
@@ -22,13 +24,15 @@ from sysreptor.ai.agents.base import (
     get_model_configs,
     init_chat_model,
 )
+from sysreptor.ai.agents.checkpointer import DjangoModelCheckpointer
 from sysreptor.ai.agents.filesystem import (
     NotesAgentsDirBackend,
     ProjectFilesystemBackend,
 )
 from sysreptor.ai.agents.middleware import SelectConfiguredModelMiddleware
-from sysreptor.ai.agents.project import (
-    ProjectContext,
+from sysreptor.ai.agents.project import ProjectContext
+from sysreptor.ai.agents.tools import analyze_image
+from sysreptor.ai.agents.tools_project import (
     create_finding,
     create_note,
     list_notes,
@@ -37,8 +41,9 @@ from sysreptor.ai.agents.project import (
     update_field_value,
     update_markdown_field,
 )
-from sysreptor.ai.models import ChatThread, LangchainCheckpoint
+from sysreptor.ai.models import ChatThread, LangchainCheckpoint, LangchainCheckpointBlob, LangchainCheckpointWrite
 from sysreptor.ai.tasks import cleanup_old_langchain_checkpoints
+from sysreptor.conf.settings import validate_ai_agent_models
 from sysreptor.pentests.models import NoteType
 from sysreptor.tasks.models import PeriodicTask, PeriodicTaskInfo, periodic_task_registry
 from sysreptor.tests.mock import (
@@ -325,6 +330,55 @@ class TestProjectAgent:
             *to_message_chunks({'type': 'text', 'content': {'role': 'assistant', 'text': llm_messages[3].content}}),
         ])
 
+    def test_subagent_error_does_not_abort_main_agent(self):
+        subagent_tool_call_id = 'subagent_tool_call_fail'
+        task_call = ToolCall(
+            id=subagent_tool_call_id,
+            name='task',
+            args={'subagent_type': 'general-purpose', 'description': 'Failing subagent'},
+        )
+
+        class FailThenContinueMessages:
+            """Main task call, then ModelRetryMiddleware attempts raise, then main continues."""
+
+            def __init__(self):
+                self._items = iter([
+                    AIMessage(content='', tool_calls=[task_call]),
+                    'fail',
+                    'fail',
+                    'fail',
+                    AIMessage(content='Continued after subagent error.'),
+                ])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                item = next(self._items)
+                if item == 'fail':
+                    raise RuntimeError('Simulated subagent LLM failure')
+                return item
+
+        with (
+            mock.patch('langchain.agents.middleware.model_retry.calculate_delay', return_value=0),
+            mock_llm_response(messages=FailThenContinueMessages()),
+        ):
+            events = self.send_message('Use a failing subagent')
+
+        assert not any(e['type'] == 'error' for e in events)
+        task_status = next(
+            e for e in events
+            if e['type'] == 'tool_call_status' and e['content'].get('id') == subagent_tool_call_id
+        )
+        assert task_status['content']['status'] == 'error'
+        assert task_status['content']['content'] == 'Error: Internal server error'
+        assert_events_equal(events, [
+            {'type': 'metadata', 'content': {'thread_id': mock.ANY}},
+            {'type': 'tool_call', 'content': copy_keys(task_call, ['id', 'name', 'args']) | {'status': 'pending', 'output': None}},
+            {'type': 'tool_call_status', 'content': copy_keys(task_call, ['id', 'name']) | {'status': 'error'}},
+            *to_message_chunks({'type': 'text', 'content': {'role': 'assistant', 'text': 'Continued after subagent error.'}}),
+        ])
+
 
 @pytest.mark.django_db()
 class TestAskUserInterrupts:
@@ -431,18 +485,28 @@ class TestProjectAgentTools:
     @pytest.fixture(autouse=True)
     def setUp(self):
         self.user = create_user()
-        self.project = create_project(members=[self.user], report_data={
-            'field_list': ['first', 'second'],
-        })
+        self.project = create_project(
+            members=[self.user],
+            images_kwargs=[{'name': 'image.png'}],
+            report_data={
+                'field_list': ['first', 'second'],
+            })
         self.client = api_client(user=self.user)
 
         with override_configuration(GUEST_USERS_CAN_EDIT_PROJECTS=False):
             yield
 
-    def run_tool(self, tool, **kwargs):
+    def run_tool(self, tool, model=None, **kwargs):
+        return self.run_tool_message(tool, model=model, **kwargs).content
+
+    def run_tool_message(self, tool, model=None, **kwargs):
         runtime = ToolRuntime(
             tool_call_id='tool_call_id_1',
-            context=ProjectContext(user_id=str(self.user.id), project_id=str(self.project.id)),
+            context=ProjectContext(
+                user_id=str(self.user.id),
+                project_id=str(self.project.id),
+                model=model,
+            ),
             state=None,
             config={},
             store=None,
@@ -453,7 +517,7 @@ class TestProjectAgentTools:
                 'runtime': runtime,
             },
         )
-        return res.update['messages'][0].content
+        return res.update['messages'][0]
 
     def test_tool_list_notes(self):
         contains_infos = [
@@ -782,6 +846,32 @@ class TestProjectAgentTools:
         sibling.refresh_from_db()
         assert sibling.order == 2
 
+    @pytest.mark.parametrize(('image_ref', 'expected'), [
+        ('image.png', True),
+        ('/images/name/image.png', True),
+        ('![shot](/images/name/image.png)', True),
+        ('![shot](/images/name/image.png){width="auto"}', True),
+        ('missing.png', False),
+        ('/images/name/missing.png', False),
+    ])
+    def test_tool_analyze_image_success(self, image_ref, expected):
+        fake_agent = mock.Mock()
+        fake_agent.ainvoke = mock.AsyncMock(return_value={
+            'messages': [AIMessage(content='Screenshot shows SQL error on login form')],
+        })
+        with mock.patch('sysreptor.ai.agents.tools.create_agent', return_value=fake_agent):
+            msg = self.run_tool_message(analyze_image, image=image_ref, prompt='What error is shown?')
+
+        if expected:
+            assert msg.status == 'success'
+            assert msg.content == 'Screenshot shows SQL error on login form'
+            assert msg.additional_kwargs['output'] == {
+                'image': 'image.png',
+                'model': 'test:fake-model',
+            }
+        else:
+            assert msg.status == 'error'
+
 
 @pytest.mark.django_db()
 class TestAgentPermissions:
@@ -860,24 +950,47 @@ class TestAgentPermissions:
 
 @pytest.mark.django_db()
 class TestAiCleanupTask:
-    def checkpoint_exists(self, checkpoint):
-        return LangchainCheckpoint.objects.filter(id=checkpoint.id).exists()
-
     def test_cleanup_old_langchain_checkpoints(self):
         with mock_time(before=timedelta(days=2)):
-            thread = ChatThread.objects.create(
-                user=create_user(),
-                project=create_project(),
+            thread = ChatThread.objects.create(user=create_user(), project=create_project())
+            old = LangchainCheckpoint.objects.create(
+                thread=thread,
+                checkpoint={'id': str(uuid4()), 'channel_versions': {'messages': '1'}, 'channel_values': {}},
             )
-            old_checkpoint = LangchainCheckpoint.objects.create(thread=thread)
-            current_checkpoint = LangchainCheckpoint.objects.create(thread=thread)
+            old_write = LangchainCheckpointWrite.objects.create(
+                thread=thread, checkpoint_ns='', checkpoint_id=old.checkpoint_id,
+                task_id='t1', idx=0, channel='messages', type='json', blob=b'"old"',
+            )
+            unreferenced_blob = LangchainCheckpointBlob.objects.create(
+                thread=thread, checkpoint_ns='',
+                channel='messages', version='1', type='json', blob=b'"v1"',
+            )
 
-        async_to_sync(cleanup_old_langchain_checkpoints)(task_info=PeriodicTaskInfo(
+            current = LangchainCheckpoint.objects.create(
+                thread=thread,
+                checkpoint={'id': str(uuid4()), 'channel_versions': {'messages': '2'}, 'channel_values': {}},
+            )
+            current_write = LangchainCheckpointWrite.objects.create(
+                thread=thread, checkpoint_ns='', checkpoint_id=current.checkpoint_id,
+                task_id='t2', idx=0, channel='messages', type='json', blob=b'"cur"',
+            )
+            referenced_blob = LangchainCheckpointBlob.objects.create(
+                thread=thread, checkpoint_ns='',
+                channel='messages', version='2', type='json', blob=b'"v2"',
+            )
+
+        cleanup_old_langchain_checkpoints(task_info=PeriodicTaskInfo(
             spec=next(filter(lambda t: t.id == 'cleanup_old_langchain_checkpoints', periodic_task_registry.tasks)),
             model=PeriodicTask(last_success=None),
         ))
-        assert not self.checkpoint_exists(old_checkpoint)
-        assert self.checkpoint_exists(current_checkpoint)
+
+        assert not LangchainCheckpoint.objects.filter(pk=old.pk).exists()
+        assert not LangchainCheckpointWrite.objects.filter(pk=old_write.pk).exists()
+        assert not LangchainCheckpointBlob.objects.filter(pk=unreferenced_blob.pk).exists()
+
+        assert LangchainCheckpoint.objects.filter(pk=current.pk).exists()
+        assert LangchainCheckpointWrite.objects.filter(pk=current_write.pk).exists()
+        assert LangchainCheckpointBlob.objects.filter(pk=referenced_blob.pk).exists()
 
 
 @pytest.mark.django_db()
@@ -930,6 +1043,71 @@ class TestLLMConfig:
             {'id': 'model-b', 'label': 'model-b'},
         ]
 
+    @pytest.mark.parametrize(('vision_model', 'expected'), [
+        (True, 'main-model'),
+        ('vision-model', 'vision-model'),
+        (False, False),
+        (None, False),
+        ('missing-vision', False),
+    ])
+    def test_vision_model_config(self, vision_model, expected):
+        models = [
+            {'id': 'main-model', 'provider': 'test', 'model': 'main-model', 'api_key': 'k', 'vision_model': vision_model},
+            {'id': 'vision-model', 'provider': 'test', 'model': 'vision-model', 'api_key': 'k', 'hidden': True},
+        ]
+        assert validate_ai_agent_models([json.dumps(m) for m in models]) is (
+            not isinstance(vision_model, str) or vision_model in {m['id'] for m in models}
+        )
+
+        user = create_user()
+        project = create_project(members=[user])
+        fake_agent = mock.Mock(ainvoke=mock.AsyncMock(return_value={'messages': [AIMessage(content='ok')]}))
+        with (
+            mock.patch('sysreptor.ai.agents.tools.get_model_configs', return_value=models),
+            mock.patch('sysreptor.ai.agents.tools.init_chat_model', return_value=mock.Mock()) as init_mock,
+            mock.patch('sysreptor.ai.agents.tools.create_agent', return_value=fake_agent),
+        ):
+            msg = async_to_sync(analyze_image.ainvoke)({
+                'image': 'file0.png',
+                'runtime': ToolRuntime(
+                    tool_call_id='t1',
+                    context=ProjectContext(user_id=str(user.id), project_id=str(project.id), model='main-model'),
+                    state=None, config={}, store=None, stream_writer=None,
+                ),
+            }).update['messages'][0]
+
+        if expected:
+            assert msg.status == 'success'
+            assert init_mock.call_args.args == (expected,)
+            assert msg.additional_kwargs['output']['model'] == expected
+        else:
+            assert msg.status == 'error'
+
+    @override_configuration(AI_AGENT_MODELS=[
+        json.dumps({
+            'id': 'vision-only',
+            'provider': 'test',
+            'model': 'vision-only',
+            'api_key': 'k',
+            'hidden': True,
+        }),
+        json.dumps({
+            'id': 'main-model',
+            'label': 'Main Model',
+            'provider': 'test',
+            'model': 'main-model',
+            'api_key': 'k',
+            'vision_model': 'vision-only',
+        }),
+    ])
+    def test_hidden_models(self):
+        assert len(get_model_configs()) == 2
+        assert len(get_model_configs(include_hidden=False)) == 1
+        assert get_default_model_id() == 'main-model'
+        assert api_client(create_user()).get(reverse('publicutils-settings')).data['ai_agent_models'] == [
+            {'id': 'main-model', 'label': 'Main Model'},
+        ]
+
 
 @pytest.mark.django_db()
 class TestLLMModelSelection:
@@ -956,10 +1134,12 @@ class TestLLMModelSelection:
         ('model-a', True),
         (None, True), # Use default model
         ('unknown', False),
+        ('hidden-model', False),
     ])
     @override_configuration(AI_AGENT_MODELS=[
         json.dumps({'id': 'model-a', 'provider': 'test', 'model': 'model-a', 'api_key': 'fake-key'}),
         json.dumps({'id': 'model-b', 'provider': 'test', 'model': 'model-b', 'api_key': 'fake-key'}),
+        json.dumps({'id': 'hidden-model', 'provider': 'test', 'model': 'hidden-model', 'api_key': 'fake-key', 'hidden': True}),
     ])
     def test_model_selection(self, model, expected):
         with mock_llm_response(messages=[AIMessage(content='Hello')]):
@@ -1450,3 +1630,139 @@ class TestNotesAgentDirAgent:
         else:
             assert memory_text not in content
             assert '(No memory loaded)' in content
+
+
+
+@pytest.mark.django_db()
+class TestDjangoModelCheckpointer:
+    def setup_method(self):
+        self.thread = ChatThread.objects.create(
+            user=create_user(),
+            project=create_project(),
+        )
+        self.saver = DjangoModelCheckpointer()
+
+    def _config(self, checkpoint_id=None, checkpoint_ns=''):
+        configurable = {
+            'thread_id': str(self.thread.id),
+            'checkpoint_ns': checkpoint_ns,
+        }
+        if checkpoint_id is not None:
+            configurable['checkpoint_id'] = str(checkpoint_id)
+        return {'configurable': configurable}
+
+    def test_put_get_roundtrip_splits_blobs(self):
+        checkpoint_id = str(uuid4())
+        version = self.saver.get_next_version(None, None)
+        checkpoint = {
+            'v': 4,
+            'id': checkpoint_id,
+            'ts': '2026-01-01T00:00:00+00:00',
+            'channel_values': {
+                'messages': [{'role': 'user', 'content': 'hi'}],
+                'count': 1,
+            },
+            'channel_versions': {
+                'messages': version,
+                'count': version,
+            },
+            'versions_seen': {},
+        }
+        config = self._config()
+        saved = self.saver.put(config, checkpoint, {'source': 'input', 'step': 1, 'writes': {}}, {
+            'messages': version,
+            'count': version,
+        })
+        assert saved['configurable']['checkpoint_id'] == checkpoint_id
+
+        assert LangchainCheckpointBlob.objects.filter(
+            thread=self.thread,
+            channel='messages',
+            version=version,
+        ).exists()
+        assert not LangchainCheckpointBlob.objects.filter(
+            thread=self.thread,
+            channel='count',
+        ).exists()
+
+        loaded = self.saver.get_tuple(self._config(checkpoint_id=checkpoint_id))
+        assert loaded is not None
+        assert loaded.checkpoint['channel_values']['messages'] == [{'role': 'user', 'content': 'hi'}]
+        assert loaded.checkpoint['channel_values']['count'] == 1
+        # Slimmed JSON keeps only inline primitives
+        row = LangchainCheckpoint.objects.get(thread=self.thread, checkpoint_id=checkpoint_id)
+        assert 'messages' not in (row.checkpoint.get('channel_values') or {})
+        assert row.checkpoint['channel_values']['count'] == 1
+
+    def test_put_writes_write_once_and_special_upsert(self):
+        checkpoint_id = uuid4()
+        LangchainCheckpoint.objects.create(
+            thread=self.thread,
+            checkpoint_id=checkpoint_id,
+            checkpoint={'id': str(checkpoint_id), 'channel_versions': {}, 'channel_values': {}},
+        )
+        config = self._config(checkpoint_id=checkpoint_id)
+
+        self.saver.put_writes(config, [('messages', 'a')], task_id='t1')
+        self.saver.put_writes(config, [('messages', 'b')], task_id='t1')
+        writes = list(LangchainCheckpointWrite.objects.filter(thread=self.thread, checkpoint_id=checkpoint_id))
+        assert len(writes) == 1
+        assert self.saver.serde.loads_typed((writes[0].type, writes[0].blob)) == 'a'
+
+        # Special channels in WRITES_IDX_MAP are upserted
+        special = next(iter(WRITES_IDX_MAP))
+        self.saver.put_writes(config, [(special, 'one')], task_id='t2')
+        self.saver.put_writes(config, [(special, 'two')], task_id='t2')
+        special_writes = list(LangchainCheckpointWrite.objects.filter(
+            thread=self.thread,
+            checkpoint_id=checkpoint_id,
+            task_id='t2',
+            channel=special,
+        ))
+        assert len(special_writes) == 1
+        assert self.saver.serde.loads_typed((special_writes[0].type, special_writes[0].blob)) == 'two'
+
+        loaded = self.saver.get_tuple(config)
+        assert loaded is not None
+        assert ('t1', 'messages', 'a') in loaded.pending_writes
+        assert ('t2', special, 'two') in loaded.pending_writes
+
+    def test_delta_channel_history_seed_and_writes(self):
+        parent_id = uuid4()
+        head_id = uuid4()
+        version = self.saver.get_next_version(None, None)
+
+        parent_checkpoint = {
+            'v': 4,
+            'id': str(parent_id),
+            'ts': '2026-01-01T00:00:00+00:00',
+            'channel_values': {'messages': [{'id': 1}]},
+            'channel_versions': {'messages': version},
+            'versions_seen': {},
+        }
+        self.saver.put(self._config(), parent_checkpoint, {'source': 'loop', 'step': 0, 'writes': {}}, {
+            'messages': version,
+        })
+        self.saver.put_writes(self._config(checkpoint_id=parent_id), [('messages', {'id': 2})], task_id='w1')
+
+        LangchainCheckpoint.objects.create(
+            thread=self.thread,
+            checkpoint_id=head_id,
+            parent_checkpoint_id=parent_id,
+            checkpoint={
+                'v': 4,
+                'id': str(head_id),
+                'ts': '2026-01-01T00:00:01+00:00',
+                'channel_values': {},
+                'channel_versions': {'messages': version},
+                'versions_seen': {},
+            },
+        )
+
+        history = self.saver.get_delta_channel_history(
+            config=self._config(checkpoint_id=head_id),
+            channels=['messages'],
+        )
+        assert 'seed' in history['messages']
+        assert history['messages']['seed'] == [{'id': 1}]
+        assert history['messages']['writes'] == [('w1', 'messages', {'id': 2})]

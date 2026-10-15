@@ -229,6 +229,17 @@ class TestTextTransformations:
         assert c2.apply(text_after) == text_before
         c2.to_dict()
 
+    @pytest.mark.parametrize('changes', [
+        [5, [-5, 'ZZZZZ'], 10],  # negative delete length (would corrupt via slice)
+        [-1, [0, 'x'], 11],  # negative retain length
+        [5, [-1], 6],  # negative delete without insert
+        [[-3, 'abc'], 10],  # negative delete at start
+        [-10],  # negative retain only
+    ])
+    def test_reject_negative_change_lengths(self, changes):
+        with pytest.raises(ValueError, match='Invalid change'):
+            ChangeSet.from_dict(changes)
+
 
 @contextlib.asynccontextmanager
 async def ws_connect(path, user, consume_init=True, other_clients=None):
@@ -1229,6 +1240,19 @@ class TestSharedProjectNotesDbSync:
         res = await self.client_public.receive_json_from()
         assert res['type'] == 'error', res
 
+    @pytest.mark.parametrize('event', [
+        {'type': CollabEventType.UPDATE_TEXT, 'path': 'title', 'updates': [{'changes': [[3, 'X']]}]},
+        {'type': CollabEventType.UPDATE_KEY, 'path': 'checked', 'value': True},
+        {'type': CollabEventType.UPDATE_KEY, 'path': 'icon_emoji', 'value': '👍'},
+    ])
+    async def test_cannot_update_share_root_locked_fields(self, event):
+        event = event | {'path': f'notes.{self.note_shared.note_id}.{event["path"]}'}
+        if event['type'] == CollabEventType.UPDATE_TEXT:
+            event = event | {'version': self.client_public.init['version']}
+        await self.client_public.send_json_to(event)
+        res = await self.client_public.receive_json_from()
+        assert res['type'] == 'error', res
+
     async def test_project_readonly_write(self):
         self.project.readonly = True
         await self.project.asave()
@@ -1425,6 +1449,19 @@ class TestSharedUserNotesDbSync:
 
     async def test_cannot_update_nonshared_notes(self):
         await self.client_public.send_json_to({'type': CollabEventType.UPDATE_KEY, 'path': f'notes.{self.note_not_shared.note_id}.icon_emoji', 'value': '👍'})
+        res = await self.client_public.receive_json_from()
+        assert res['type'] == 'error', res
+
+    @pytest.mark.parametrize('event', [
+        {'type': CollabEventType.UPDATE_TEXT, 'path': 'title', 'updates': [{'changes': [[3, 'X']]}]},
+        {'type': CollabEventType.UPDATE_KEY, 'path': 'checked', 'value': True},
+        {'type': CollabEventType.UPDATE_KEY, 'path': 'icon_emoji', 'value': '👍'},
+    ])
+    async def test_cannot_update_share_root_locked_fields(self, event):
+        event = event | {'path': f'notes.{self.note_shared.note_id}.{event["path"]}'}
+        if event['type'] == CollabEventType.UPDATE_TEXT:
+            event = event | {'version': self.client_public.init['version']}
+        await self.client_public.send_json_to(event)
         res = await self.client_public.receive_json_from()
         assert res['type'] == 'error', res
 

@@ -58,6 +58,22 @@ export function isLastAssistantMessageInTurn(
   return !next || next.role === MessageRole.USER;
 }
 
+export function isChatMessageStreaming(
+  msg: ChatHistoryEntry,
+  options: { inProgress: boolean; isLastMessage: boolean },
+): boolean {
+  if (!options.inProgress) {
+    return false;
+  }
+  if (msg.role === MessageRole.TOOL) {
+    return msg.tool_call?.status === ToolCallStatus.PENDING;
+  }
+  if (msg.role === MessageRole.ASSISTANT) {
+    return options.isLastMessage;
+  }
+  return false;
+}
+
 export enum StreamEventType {
   METADATA = 'metadata',
   TEXT = 'text',
@@ -103,6 +119,14 @@ export type StreamEvent = {
   content: string;
 };
 
+function isRequestAborted(error: any): boolean {
+  return Boolean(error?.options?.signal?.aborted || error?.name === 'AbortError' || error?.message === 'Aborted by user');
+}
+
+export function formatAgentRequestError(error: any): string {
+  return formatRequestError({ error, message: 'AI chat request failed' }) || 'Unexpected error';
+}
+
 export function findToolCall(
   messages: ChatHistoryEntry[],
   toolCallId?: string|null,
@@ -114,7 +138,7 @@ export function findToolCall(
     if (m.role === MessageRole.TOOL && m.tool_call?.id === toolCallId) {
       return m.tool_call;
     }
-    if (m.role === MessageRole.TOOL && m.tool_call?.name === 'task' && m.tool_call.subagentMessages) {
+    if (m.role === MessageRole.TOOL && m.tool_call?.subagentMessages) {
       const toolCall = findToolCall(m.tool_call.subagentMessages, toolCallId);
       if (toolCall) { 
         return toolCall;
@@ -280,6 +304,7 @@ export async function submitMessageStreamed(options: {
   const messages = [] as ChatHistoryEntry[];
   const pendingToolCalls = [] as ToolCall[];
   let interrupts: ChatInterrupt[] = [];
+  let error: string | null = null;
 
   await fetchSSE("/api/v1/utils/chat/", {
     method: "POST",
@@ -324,8 +349,8 @@ export async function submitMessageStreamed(options: {
         }
       } else if (data.type === StreamEventType.INTERRUPT) {
         interrupts = data.content;
-      } else if (data.type === 'error') {
-        throw new Error(data.content);
+      } else if (data.type === StreamEventType.ERROR) {
+        error = data.content;
       }
     }
   });
@@ -336,6 +361,7 @@ export async function submitMessageStreamed(options: {
     pendingToolCalls,
     interrupts,
     messageHistory: options.messageHistory,
+    error,
   }
 }
 
@@ -344,6 +370,7 @@ export type AiAgentStoreState = {
   threadId: string|null;
   messageHistory: ChatHistoryEntry[];
   interrupts: ChatInterrupt[];
+  error: string|null;
   currentRequest: {
     promise?: Promise<any>;
     abortController?: AbortController;
@@ -437,6 +464,7 @@ export function useAiAgentChat(options: {
 
     // User chose to send a new message instead of answering pending questions.
     options.storeState.interrupts = [];
+    options.storeState.error = null;
 
     options.storeState.messageHistory.push({
       id: uuidv4(),
@@ -462,14 +490,20 @@ export function useAiAgentChat(options: {
       const out = await promise;
       options.storeState.threadId = out.metadata.thread_id;
       options.storeState.interrupts = out.interrupts;
+      options.storeState.error = out.error;
 
       if (abortController.signal.aborted) {
         return 'aborted';
+      } else if (out.error) {
+        return 'error';
       } else {
         return 'success';
       }
     } catch (error) {
-      requestErrorToast({ error });
+      if (isRequestAborted(error)) {
+        return 'aborted';
+      }
+      options.storeState.error = formatAgentRequestError(error);
       return 'error';
     } finally {
       options.storeState.currentRequest = null;
@@ -480,6 +514,8 @@ export function useAiAgentChat(options: {
     if (inProgress.value || !options.storeState.threadId) {
       return;
     }
+
+    options.storeState.error = null;
 
     try {
       const abortController = new AbortController();
@@ -496,14 +532,20 @@ export function useAiAgentChat(options: {
       const out = await promise;
       options.storeState.threadId = out.metadata.thread_id;
       options.storeState.interrupts = out.interrupts;
+      options.storeState.error = out.error;
 
       if (abortController.signal.aborted) {
         return 'aborted';
+      } else if (out.error) {
+        return 'error';
       } else {
         return 'success';
       }
     } catch (error) {
-      requestErrorToast({ error });
+      if (isRequestAborted(error)) {
+        return 'aborted';
+      }
+      options.storeState.error = formatAgentRequestError(error);
       return 'error';
     } finally {
       options.storeState.currentRequest = null;
@@ -521,6 +563,7 @@ export function useAiAgentChat(options: {
     options.storeState.threadId = null;
     options.storeState.messageHistory = [];
     options.storeState.interrupts = [];
+    options.storeState.error = null;
     resetChanges();
   }
 
@@ -528,6 +571,7 @@ export function useAiAgentChat(options: {
     threadId: computed(() => options.storeState.threadId),
     messageHistory: computed(() => options.storeState.messageHistory),
     interrupts: computed(() => options.storeState.interrupts),
+    error: computed(() => options.storeState.error),
     changedFiles,
     inProgress,
     submitMessage,
@@ -577,6 +621,21 @@ export function parseProjectFilePath(filePath: string) {
   return null;
 }
 
+export function parseProjectImageName(imageRef: string | null | undefined): string | null {
+  if (!imageRef || typeof imageRef !== 'string') {
+    return null;
+  }
+  let filename = imageRef.trim();
+  const match = filename.match(/\/images\/name\/([^)\s{]+)/);
+  if (match?.[1]) {
+    filename = match[1];
+  }
+  if (!filename || filename.includes('/')) {
+    return null;
+  }
+  return filename;
+}
+
 export function getChangedPagePath(projectId: string, page: AgentChangedPage): string|undefined {
   let basePath;
   if (page.type === 'finding') {
@@ -624,7 +683,7 @@ function walkToolCalls(messages: ChatHistoryEntry[], callback: (tool: ToolCall) 
       continue;
     }
     callback(m.tool_call);
-    if (m.tool_call.name === 'task' && m.tool_call.subagentMessages?.length) {
+    if (m.tool_call.subagentMessages?.length) {
       walkToolCalls(m.tool_call.subagentMessages, callback);
     }
   }

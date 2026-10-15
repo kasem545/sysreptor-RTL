@@ -46,7 +46,10 @@
           :key="msg.id"
           :msg="msg"
           :project="props.project"
-          :is-streaming="msg.id === currentStreamingMessageId"
+          :is-streaming="isChatMessageStreaming(msg, {
+            inProgress: agent.inProgress.value,
+            isLastMessage: idx === agent.messageHistory.value.length - 1,
+          })"
           :is-last-message="isLastAssistantMessageInTurn(agent.messageHistory.value, idx)"
         />
         <template v-if="agent.interrupts.value.length > 0 && !agent.inProgress.value">
@@ -59,6 +62,19 @@
           />
         </template>
       </template>
+      <chat-reasoning-panel
+        v-if="agent.inProgress.value && agent.messageHistory.value.at(-1)?.role === MessageRole.USER"
+        :is-streaming="true"
+      />
+
+      <v-alert
+        v-if="agent.error.value"
+        type="error"
+        variant="tonal"
+        density="compact"
+        class="mt-2 mb-2"
+        :text="agent.error.value"
+      />
     </div>
     <div class="pa-2">
       <s-card density="compact" variant="tonal" class="chat-compose-card">
@@ -98,7 +114,7 @@
               density="compact"
               v-tooltip="'Send message (Enter)'"
             />
-            <div v-else class="btn-stop" style="position: relative; display: inline-flex;">
+            <div v-else class="btn-stop">
               <v-progress-circular
                 indeterminate
                 :size="24"
@@ -176,10 +192,12 @@
 
 <script setup lang="ts">
 import { pick, throttle } from 'lodash-es';
-import { getPageTitle, parseProjectFilePath, type AgentChangedPage } from '@/utils/agent';
+import { getPageTitle, parseProjectFilePath, MessageRole, isChatMessageStreaming, isLastAssistantMessageInTurn, type AgentChangedPage } from '@/utils/agent';
+import { parseCommentLocation, prettyFieldLabel } from '~/utils/comments';
 
 const props = defineProps<{
   project: PentestProject;
+  projectType?: ProjectType;
   context: Record<string, string|undefined>;
   collabFlush?: (() => void|Promise<void>);
   readonly?: boolean;
@@ -267,12 +285,6 @@ async function onRevertPage(page: AgentChangedPage) {
   }
 }
 
-const currentStreamingMessageId = computed(() => {
-  if (!agent.inProgress.value) {
-    return null;
-  }
-  return agent.messageHistory.value.at(-1)?.id ?? null;
-});
 const messagesContainerRef = useTemplateRef('messagesContainerRef');
 const isScrolledToBottom = ref(true);
 
@@ -283,6 +295,13 @@ const aiAgentModel = computed({
 const form = ref({
   message: '',
 });
+
+watch(() => [localSettings.reportingChatAgent, apiSettings.isProfessionalLicense], () => {
+  if (localSettings.reportingChatAgent === 'project_agent' && !apiSettings.isProfessionalLicense) {
+    localSettings.reportingChatAgent = 'project_ask';
+  }
+}, { immediate: true });
+
 async function sendMessage() {
   if (!hasModelsConfigured.value || !form.value.message.trim()) {
     return;
@@ -349,6 +368,59 @@ const onScrollMessages = throttle(() => {
   isScrolledToBottom.value = scrollHeight - scrollTop - clientHeight < 50;
 }, 100);
 
+async function onPrefillPrompt(event: any) {
+  if (!hasModelsConfigured.value || agent.inProgress.value) {
+    return;
+  }
+
+  let text = '';
+  if (event.type === 'fill_field' && event.collabPath && props.projectType) {
+    const relativePath = event.collabPath.split('/').at(-1) || event.collabPath;
+    const location = parseCommentLocation(relativePath);
+    const fieldId = location?.dataPath.replaceAll('.[', '[') || '';
+    const fieldLabel = prettyFieldLabel(relativePath, props.projectType) || fieldId;
+
+    let entityKind: string | undefined;
+    let title: string | undefined;
+    if (location?.type === 'findings') {
+      entityKind = 'finding';
+      const finding = projectStore.findings(props.project.id).find(f => f.id === location.id);
+      title = finding?.data?.title || location.id;
+    } else if (location?.type === 'sections') {
+      entityKind = 'section';
+      const section = projectStore.sections(props.project.id).find(s => s.id === location.id);
+      title = section?.label || location.id;
+    }
+
+    if (entityKind && location) {
+      text = `Draft or rewrite the "${fieldLabel}" (${fieldId}) field in ${entityKind} "${title}" (ID ${location.id}). ` + 
+        `Base the text on other fields in this ${entityKind} and project notes; do not invent facts. ` + 
+        'Ask the user if required information is missing. ' + 
+        'Update only this field.';
+    }
+  }
+  if (!text) {
+    return;
+  }
+
+  if (form.value.message.trim()) {
+    text = form.value.message.trimEnd() + '\n\n' + text;
+  }
+  form.value.message = text;
+
+  if (localSettings.reportingChatAgent !== 'project_agent' && apiSettings.isProfessionalLicense) {
+    localSettings.reportingChatAgent = 'project_agent';
+  }
+
+  await nextTick();
+  messageTextareaRef.value?.focus();
+}
+const eventBusPrefillPrompt = useEventBus('ai:prefillPrompt');
+eventBusPrefillPrompt.on(onPrefillPrompt);
+onBeforeUnmount(() => {
+  eventBusPrefillPrompt.off(onPrefillPrompt);
+});
+
 </script>
 
 <style lang="scss" scoped>
@@ -357,7 +429,7 @@ const onScrollMessages = throttle(() => {
   word-break: break-word;
 }
 .btn-stop {
-  position: inherit;
+  position: relative;
   display: inline-flex;
 
   & > .v-progress-circular {

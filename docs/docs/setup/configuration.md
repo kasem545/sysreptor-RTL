@@ -215,13 +215,17 @@ SECURE_SSL_REDIRECT=on
 ```
 
 ### Proxy Server
-Set the proxy variables `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` to allow outbound connections using a proxy server.
+Configure outbound proxy settings in `deploy/.env`. Docker Compose passes them into the containers as `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
 
-```dotenv title="Example:"
-HTTP_PROXY="http://192.168.0.111:8080"
-HTTPS_PROXY="http://192.168.0.111:8080"
+```dotenv title="Example (deploy/.env):"
+SYSREPTOR_HTTP_PROXY=http://192.168.0.111:8080
+SYSREPTOR_HTTPS_PROXY=http://192.168.0.111:8080
+SYSREPTOR_NO_PROXY=localhost,127.0.0.1,languagetool
 ```
 
+`SYSREPTOR_NO_PROXY` replaces any host `NO_PROXY` fallback, so it must list every host that should be reached directly (not via the proxy).
+Include `languagetool` so spell check can reach the LanguageTool container. Add any other internal HTTP hostnames (for example a custom container).
+Keep `localhost` and `127.0.0.1` so in-container requests are not proxied.
 
 ::: info The proxy server must be reachable from container
 
@@ -519,6 +523,9 @@ Model IDs and labels are exposed to all authenticated users; API keys and other 
 | `api_key` | API key for the provider |
 | `base_url` | API base URL (for OpenAI-compatible or custom endpoints) |
 | `label` | Display name in the UI (defaults to `id`) |
+| `use_responses_api` | Optional. When `true`, use the OpenAI Responses API instead of Chat Completions API. |
+| `vision_model` | Controls image analysis (`analyze_image`). Omitted or `true`: use this model (default; the model must support image input). A model `id`: use that entry for vision. `false`: disable |
+| `hidden` | Optional. When `true`, the model is not shown in LLM model selection and not returned from the API. It can only be used by referencing its `id` in another model's `vision_model` |
 | *other* | Additional model-specific LangChain parameters (e.g. `temperature`, `reasoning_effort`, etc.) |
 
 
@@ -541,6 +548,20 @@ The `deepseek` provider has nothing to do with the Deepseek LLM vendor.
   "model": "gpt-oss-120b",
   "api_key": "...",
   "base_url": "https://llm.example.com:4000/"
+}
+```
+
+**OpenAI-compatible Responses API** (e.g. LiteLLM, OpenRouter, OpenAI, Azure OpenAI). Set `store: false` when supported to disable provider-side retention of chat history (often enabled by default).
+```json
+{
+  "id": "glm-5.3",
+  "label": "GLM 5.3",
+  "provider": "openai",
+  "model": "zai-org/GLM-5.3",
+  "api_key": "...",
+  "base_url": "https://llm.example.com:4000/",
+  "use_responses_api": true,
+  "store": false
 }
 ```
 

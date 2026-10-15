@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from sysreptor.pentests.models import (
     NoteType,
@@ -99,6 +100,33 @@ class TestSharedProjectNotePermissions:
         note_id = getattr(self, note).note_id
         res = self.client.delete(reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': note_id}))
         assert res.status_code in ([204] if expected else [400, 404])
+
+    @pytest.mark.parametrize(('expected', 'field', 'value'), [
+        (False, 'title', 'renamed'),
+        (False, 'checked', True),
+        (False, 'icon_emoji', '👍'),
+        (True, 'text', 'updated root text'),
+    ])
+    def test_cannot_update_share_root_locked_fields(self, expected, field, value):
+        res = self.client.patch(
+            reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': self.note_shared.note_id}),
+            data={field: value},
+        )
+        assert res.status_code == (200 if expected else 400), res.data
+
+    @pytest.mark.parametrize(('field', 'value'), [
+        ('title', 'renamed child'),
+        ('checked', True),
+        ('icon_emoji', '👍'),
+        ('text', 'updated child text'),
+    ])
+    def test_can_update_child_locked_fields(self, field, value):
+        res = self.client.patch(
+            reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': self.childnote_shared.note_id}),
+            data={field: value},
+        )
+        assert res.status_code == 200, res.data
+        assert res.data[field] == value
 
     def test_list_includes_only_childnotes(self):
         res = self.client.get(reverse('sharednote-list', kwargs={'shareinfo_pk': self.share_info.id}))
@@ -204,6 +232,33 @@ class TestSharedUserNotePermissions:
         note_id = getattr(self, note).note_id
         res = self.client.delete(reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': note_id}))
         assert res.status_code in ([204] if expected else [400, 404])
+
+    @pytest.mark.parametrize(('expected', 'field', 'value'), [
+        (False, 'title', 'renamed'),
+        (False, 'checked', True),
+        (False, 'icon_emoji', '👍'),
+        (True, 'text', 'updated root text'),
+    ])
+    def test_cannot_update_share_root_locked_fields(self, expected, field, value):
+        res = self.client.patch(
+            reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': self.note_shared.note_id}),
+            data={field: value},
+        )
+        assert res.status_code == (200 if expected else 400), res.data
+
+    @pytest.mark.parametrize(('field', 'value'), [
+        ('title', 'renamed child'),
+        ('checked', True),
+        ('icon_emoji', '👍'),
+        ('text', 'updated child text'),
+    ])
+    def test_can_update_child_locked_fields(self, field, value):
+        res = self.client.patch(
+            reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': self.childnote_shared.note_id}),
+            data={field: value},
+        )
+        assert res.status_code == 200, res.data
+        assert res.data[field] == value
 
     def test_list_includes_only_childnotes(self):
         res = self.client.get(reverse('sharednote-list', kwargs={'shareinfo_pk': self.share_info.id}))
@@ -992,6 +1047,37 @@ class TestPeriodicShareAllowlistPrune:
         share_info.refresh_from_db()
         assert shared_file.id not in share_info.allowed_file_ids
 
+    @pytest.mark.parametrize(('data', 'expected_pruned'), [
+        ({'expire_date': (timezone.now() + timedelta(days=60)).date().isoformat()}, True),
+        ({'is_revoked': True}, True),
+        ({'password': 'new-password'}, True),
+        ({'permissions_write': False}, True),
+        ({'comment': 'unrelated change'}, False),
+    ])
+    def test_share_update_prunes_allowlist(self, data, expected_pruned):
+        member = create_user()
+        project = create_project(
+            members=[member],
+            notes_kwargs=[],
+            images_kwargs=[],
+            files_kwargs=[{'name': self.SHARED_FILE, 'content': b'shared-ok'}],
+        )
+        note_shared = create_projectnotebookpage(
+            project=project,
+            text=f'[file](/files/name/{self.SHARED_FILE})',
+        )
+        share_info = create_shareinfo(projectnote=note_shared, permissions_write=True)
+        shared_file = project.files.get(name=self.SHARED_FILE)
+        assert shared_file.id in share_info.allowed_file_ids
+
+        note_shared.text = 'unlinked'
+        note_shared.save()
+
+        res = api_client(user=member).patch(reverse('projectnoteshareinfo-detail', kwargs={'project_pk': project.id, 'note_id': note_shared.note_id, 'pk': share_info.id}), data=data)
+        assert res.status_code == 200, res.data
+        share_info.refresh_from_db()
+        assert (shared_file.id not in share_info.allowed_file_ids) == expected_pruned
+
 
 @pytest.mark.django_db()
 class TestSharePasswordAuth:
@@ -1079,3 +1165,11 @@ class TestSharePasswordAuth:
 
         res = victim_client.get(note_url)
         assert res.status_code == 200
+
+    def test_password_change_invalidates_session(self):
+        assert self.client.post(reverse('publicshareinfo-auth', kwargs={'pk': self.share_info.id}), data={'password': self.password}).status_code == 200
+        note_url = reverse('sharednote-detail', kwargs={'shareinfo_pk': self.share_info.id, 'id': self.note.note_id})
+        assert self.client.get(note_url).status_code == 200
+
+        update(self.share_info, password='new-password')  # noqa: S106
+        assert self.client.get(note_url).status_code == 403

@@ -1,5 +1,8 @@
 <template>
-  <div class="text-body-medium text-disabled mt-2">
+  <component
+    :is="isPendingLine ? ChatThinkingPlaceholder : 'div'"
+    class="text-body-medium text-disabled mt-2"
+  >
     <template v-if="props.value.name === 'read_file' && props.project && projectFileRef">
       <chat-tool-call-status :status="props.value.status" />
       Read
@@ -115,36 +118,49 @@
         </v-list-item>
       </v-list>
     </template>
-    <template v-else-if="props.value.name === 'task'">
+    <template v-else-if="['task', 'analyze_image'].includes(props.value.name)">
       <chat-reasoning-panel
         :is-streaming="props.isStreaming"
+        :expand-while-streaming="true"
         max-height-streaming="15em"
         class="subagent-messages border-l"
       >
         <template #title>
-          <v-expansion-panel-title class="text-body-medium text-disabled">
-            <chat-tool-call-status :status="props.value.status" class="mr-1" />
+          <chat-tool-call-status :status="props.value.status" class="mr-1" />
+          <template v-if="props.value.name === 'task'">
             Running subagent {{ props.value.args.subagent_type }}
-          </v-expansion-panel-title>
+          </template>
+          <template v-else-if="props.value.name === 'analyze_image'">
+            Analyzing image&nbsp;
+            <a
+              v-if="analyzeImagePreview"
+              href="#"
+              class="analyze-image-link"
+              @click.stop.prevent="analyzeImagePreviewModel = analyzeImagePreview"
+            >
+              {{ props.value.args.image }}
+            </a>
+            <span v-else>{{ props.value.args.image }}</span>
+          </template>
         </template>
         <template #default>
-          <template v-if="props.value.subagentMessages?.length">
-            <chat-message
-              v-for="msg, idx in props.value.subagentMessages" :key="msg.id"
-              :msg="msg"
-              :project="props.project"
-              :is-streaming="props.isStreaming && idx === props.value.subagentMessages!.length - 1"
-            />
-          </template>
-          <markdown-preview
-            v-if="props.value.content"
-            :value="props.value.content"
-            :readonly="true"
-            :throttle-ms="100"
-            class="message-text"
+          <chat-message
+            v-for="msg, idx in subagentDisplayMessages" :key="msg.id"
+            :msg="msg"
+            :project="props.project"
+            :is-streaming="isChatMessageStreaming(msg, {
+              inProgress: props.isStreaming,
+              isLastMessage: idx === subagentDisplayMessages.length - 1,
+            })"
           />
         </template>
       </chat-reasoning-panel>
+      <markdown-image-preview-dialog
+        v-if="analyzeImagePreview"
+        v-model="analyzeImagePreviewModel"
+        :images="[analyzeImagePreview]"
+        :readonly="true"
+      />
     </template>
     <template v-else-if="props.value.name === 'ls'">
       <chat-tool-call-status :status="props.value.status" />
@@ -152,7 +168,7 @@
     </template>
     <template v-else-if="['read_file', 'write_file', 'edit_file'].includes(props.value.name)">
       <chat-tool-call-status :status="props.value.status" />
-      {{ props.value.name }} {{ props.value.args.file_path }}
+      {{ capitalize(props.value.name.split('_')[0]) }} {{ props.value.args.file_path }}
     </template>
     <template v-else-if="['glob', 'grep'].includes(props.value.name)">
       <chat-tool-call-status :status="props.value.status" />
@@ -162,11 +178,21 @@
       <chat-tool-call-status :status="props.value.status" />
       {{ props.value.name }}
     </template>
-  </div>
+  </component>
 </template>
 
 <script setup lang="ts">
-import { getPageTitle, parseProjectFilePath, ToolCallStatus } from '@/utils/agent';
+import ChatThinkingPlaceholder from '@/components/Chat/ThinkingPlaceholder.vue';
+import {
+  getPageTitle,
+  isChatMessageStreaming,
+  MessageRole,
+  parseProjectFilePath,
+  parseProjectImageName,
+  ToolCallStatus,
+} from '@/utils/agent';
+import { absoluteApiUrl } from '#imports';
+import { capitalize } from 'lodash-es';
 
 const props = defineProps<{
   value: ToolCall;
@@ -176,6 +202,26 @@ const props = defineProps<{
 
 const projectStore = useProjectStore();
 
+const isPendingLine = computed(() =>
+  props.isStreaming && !['task', 'analyze_image', 'ask_user'].includes(props.value.name),
+);
+const subagentDisplayMessages = computed(() => {
+  const out = [];
+  const toolCall = props.value;
+  const prompt = 
+    toolCall.name === 'task' ? toolCall.args?.description :
+    toolCall.name === 'analyze_image' ? toolCall.args?.prompt :
+    null;
+  if (prompt) {
+    out.push({ id: `${toolCall.id}-prompt`, role: MessageRole.USER, text: prompt });
+  }
+  if (toolCall.subagentMessages?.length) {
+    out.push(...toolCall.subagentMessages);
+  } else if (toolCall.content) {
+    out.push({ id: `${toolCall.id}-content`, role: MessageRole.ASSISTANT, text: toolCall.content });
+  }
+  return out;
+});
 const projectFileRef = computed(() => {
   if (!['read_file', 'update_field_value', 'update_markdown_field'].includes(props.value.name)) {
     return null;
@@ -223,12 +269,33 @@ const writeTodosList = computed(() => {
   }));
 });
 
+const analyzeImagePreview = computed((): PreviewImage | null => {
+  if (props.value.name !== 'analyze_image' || !props.project) {
+    return null;
+  }
+  const filename = parseProjectImageName(props.value.output?.image)
+    || parseProjectImageName(props.value.args?.image);
+  if (!filename) {
+    return null;
+  }
+  return {
+    src: absoluteApiUrl(`/api/v1/pentestprojects/${props.project.id}/images/name/${encodeURIComponent(filename)}/`),
+    markdown: `![](/images/name/${filename})`,
+  };
+});
+const analyzeImagePreviewModel = ref<PreviewImage | null>(null);
+
 </script>
 
 <style lang="scss" scoped>
 a {
   text-decoration: none;
   color: rgb(var(--v-theme-primary));
+}
+
+.analyze-image-link {
+  position: relative;
+  z-index: 1;
 }
 
 .list-todos:deep() {
@@ -246,10 +313,6 @@ a {
   & > .v-expansion-panel > .v-expansion-panel-title {
     padding-left: 0;
   }
-}
-
-.message-text {
-  font-size: 0.875rem;
 }
 
 .ask-user-result-card:deep() {
